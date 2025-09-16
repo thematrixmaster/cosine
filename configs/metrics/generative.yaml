@@ -1,0 +1,11 @@
+defaults:
+  - seqidentity@seqidentity
+  # - strfolded@strfolded
+  - _self_
+
+seqidentity:
+  reference_path: ${paths.data_dir}/sets/b1lpa6_ecosm_russ_2020.parquet
+
+# strfolded:
+#   # reference_path: ${paths.data_dir}/external/1ECM.cif
+#   reference_path: null

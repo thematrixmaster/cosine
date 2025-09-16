@@ -1,0 +1,5 @@
+_target_: evo.tokenization.Vocab.from_esm_alphabet
+
+alphabet:
+  _target_: esm.data.Alphabet.from_architecture
+  name: msa_transformer

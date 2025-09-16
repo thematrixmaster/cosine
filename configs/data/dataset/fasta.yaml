@@ -1,0 +1,5 @@
+_target_: evo.dataset.EncodedFastaDataset
+
+data_file: ${paths.data_dir}/<path_to_fast_file>.fasta
+
+vocab: ${vocab}

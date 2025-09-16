@@ -1,0 +1,15 @@
+_target_: plmr.models.nets.peint.PIPET.from_pretrained_esm2
+
+num_heads: 20
+embed_dim: 640
+max_len: 1022
+num_encoder_layers: 3
+num_decoder_layers: 3
+
+dropout_p: 0.0
+use_attention_bias: true
+
+finetune_esm: false
+tie_lm_heads: true
+chain_break_token: .
+decoder_self_attn_type: full

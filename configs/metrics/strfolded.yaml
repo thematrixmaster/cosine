@@ -1,0 +1,5 @@
+_target_: plmr.metrics.generative.StructureFoldingMetric
+
+reference_path: null
+folding_method: colabfold
+colabfold_env: colabfold

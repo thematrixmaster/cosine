@@ -1,0 +1,14 @@
+/proteingym
+/sets/*
+/sets_cached/*
+/wyatt/**
+/oas/**
+*.txt
+*.csv
+*.csv.gz
+*.pdf
+
+# symlinks
+link.sh
+sets
+sets_cached

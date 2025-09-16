@@ -1,0 +1,37 @@
+_target_: evo.tokenization.Vocab
+
+tokens:
+  <pad>: 0
+  <cls>: 1
+  <sep>: 2
+  X: 3
+  A: 4
+  R: 5
+  N: 6
+  D: 7
+  C: 8
+  Q: 9
+  E: 10
+  G: 11
+  H: 12
+  I: 13
+  L: 14
+  K: 15
+  M: 16
+  F: 17
+  P: 18
+  S: 19
+  T: 20
+  W: 21
+  Y: 22
+  V: 23
+  ".": 24
+  "-": 25
+
+pad_token: <pad>
+bos_token: <cls>
+eos_token: <sep>
+unk_token: X
+mask_token: null
+prepend_bos: false
+append_eos: false

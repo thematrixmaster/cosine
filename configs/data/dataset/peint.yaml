@@ -1,0 +1,25 @@
+_target_: plmr.data.datasets.peint.EncodedPEINTDataset
+
+dataset:
+  _target_: torch.utils.data.ConcatDataset
+  datasets:
+    - _target_: evo.dataset.CherriesDataset
+      data_file: ${paths.data_dir}/wyatt/all/edges_joint/d1.txt
+      cache_indices: false
+      min_t: 5e-3
+      quantize_t: false
+    - _target_: evo.dataset.CherriesDataset
+      data_file: ${paths.data_dir}/wyatt/all/edges_joint/d2.txt
+      cache_indices: false
+      min_t: 5e-3
+      quantize_t: false
+    - _target_: evo.dataset.CherriesDataset
+      data_file: ${paths.data_dir}/wyatt/all/edges_joint/d3.txt
+      cache_indices: false
+      min_t: 5e-3
+      quantize_t: false
+
+vocab: ${vocab}
+mask_prob: 0.15
+random_token_prob: 0.0
+leave_unmasked_prob: 0.0
