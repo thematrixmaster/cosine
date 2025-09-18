@@ -11,7 +11,7 @@ peint/
     experiment/       # Experiment-specific configs
     data/             # Data module configurations
     model/            # Model configurations
-    net/              # Network architecture configs 
+    net/              # Network architecture configs
     trainer/          # Lightning trainer configs
     callbacks/        # Training callbacks
   peint/              # Main Python package
@@ -179,7 +179,23 @@ model:
 
 ### Testing and Validation
 
+**Test Organization Guidelines:**
+- **NEVER** create test files in the project root directory
+- All tests MUST be placed in the `tests/` folder using proper pytest structure
+- Use descriptive test file names starting with `test_` (e.g., `test_pipet_pipeline.py`)
+- Organize tests into classes and use pytest fixtures for setup
+- Follow pytest naming conventions for test functions (`test_*`)
+
 ```bash
+# Run pytest test suite
+uv run pytest tests/
+
+# Run specific test file
+uv run pytest tests/test_pipet_pipeline.py
+
+# Run tests with verbose output
+uv run pytest tests/ -v
+
 # Run validation scripts
 uv run python scripts/validate_new_ckpt.py
 uv run python scripts/validate_old_ckpt.py
@@ -187,6 +203,16 @@ uv run python scripts/validate_old_ckpt.py
 # Inference and mutation analysis
 uv run python scripts/infer_mutations.py
 uv run python scripts/sample_on_tree.py
+```
+
+**Test File Structure:**
+```
+tests/
+  test_pipet_pipeline.py      # PIPET training pipeline tests
+  test_pipet_core.py          # Core PIPET functionality tests
+  test_encoder_attention.py   # Multi-sequence attention tests
+  test_encoder_simple.py      # Basic encoder functionality tests
+  test_generative_metrics.py  # Existing generative metrics tests
 ```
 
 ## Notebooks and Analysis
