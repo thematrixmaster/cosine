@@ -1,4 +1,4 @@
-_target_: plmr.metrics.generative.StructureFoldingMetric
+_target_: peint.metrics.shared.StructureFoldingMetric
 
 reference_path: null
 folding_method: colabfold

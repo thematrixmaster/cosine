@@ -1,0 +1,26 @@
+defaults:
+  - zero_shot_dms@bind_heavy
+  - zero_shot_dms@bind_light
+  - zero_shot_dms@expr_heavy
+  - zero_shot_dms@expr_light
+  - _self_
+
+bind_heavy:
+  datafile: ${paths.data_dir}/wyatt/dms/koenig_kd_heavy.csv
+  name: koenig_binding_heavy
+  log_transform: true
+
+bind_light:
+  datafile: ${paths.data_dir}/wyatt/dms/koenig_kd_light.csv
+  name: koenig_binding_light
+  log_transform: true
+
+expr_heavy:
+  datafile: ${paths.data_dir}/wyatt/dms/koenig_expr_heavy.csv
+  name: koenig_expression_heavy
+  log_transform: true
+
+expr_light:
+  datafile: ${paths.data_dir}/wyatt/dms/koenig_expr_light.csv
+  name: koenig_expression_light
+  log_transform: true

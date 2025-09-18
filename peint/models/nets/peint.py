@@ -5,10 +5,10 @@ import torch
 import torch.nn as nn
 from esm.model.esm2 import ESM2
 from esm.modules import RobertaLMHead
-from evo.tokenization import Vocab
 from torch import Tensor
 from tqdm import tqdm
 
+from evo.tokenization import Vocab
 from peint.data.utils import RESIDUES
 from peint.models.nets.esm2 import ESM2Flash, ESM2Model
 from peint.models.nets.transformer import (
@@ -453,6 +453,7 @@ class PIPET(PEINT):
         finetune_esm: bool = False,
         tie_lm_heads: bool = True,
         chain_break_token: str = ".",
+        encoder_self_attn_type: str = "intra_inter",
         decoder_self_attn_type: str = "full",
         *args,
         **kwargs,
@@ -480,6 +481,7 @@ class PIPET(PEINT):
                     ffn_embed_dim=4 * embed_dim,
                     dropout_p=dropout_p,
                     layer_idx=i,
+                    self_attn_type=encoder_self_attn_type,
                 )
                 for i in range(num_encoder_layers)
             ]

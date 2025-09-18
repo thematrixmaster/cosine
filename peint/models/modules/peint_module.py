@@ -1,11 +1,12 @@
 from functools import partial
-from typing import List
+from typing import Dict, List
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers.optimization import get_polynomial_decay_schedule_with_warmup
 
+from peint.metrics.api import Metric
 from peint.models.modules.plmr_module import PLMRLitModule
 from peint.models.nets.peint import PEINT, PIPET
 from peint.models.nets.utils import _create_sequence_mask, _expand_distances_to_seqlen
@@ -27,6 +28,7 @@ class PEINTModule(PLMRLitModule):
         ),
         compile: bool = False,
         val_metrics_every_n_epoch: int = 1,
+        metrics: Dict[str, Metric] = {},
         ignore: List[str] = [],
         *args,
         **kwargs,
@@ -40,6 +42,7 @@ class PEINTModule(PLMRLitModule):
             *args,
             **kwargs,
         )
+        self.metrics = metrics
 
     def forward(self, x, y, t, x_pad_mask, y_pad_mask):
         return self.net(x, y, t, x_pad_mask, y_pad_mask)
@@ -72,8 +75,15 @@ class PEINTModule(PLMRLitModule):
         }
         return loss, metrics
 
-    def validation_step(self, batch, batch_idx):
-        [x, x_targets, y, y_targets, t, x_pad_mask, y_pad_mask] = batch
+    def on_validation_epoch_start(self):
+        super().on_validation_epoch_start()
+        self.validation_step_outputs = [[] for _ in self.trainer.val_dataloaders]
+
+    def validation_step(self, batch, batch_idx: int, dataloader_idx: int):
+        if dataloader_idx == 0:
+            [x, x_targets, y, y_targets, t, x_pad_mask, y_pad_mask] = batch
+        else:
+            [x, y, y_targets, muts, t, x_pad_mask, y_pad_mask] = batch
 
         yt_mask = y_targets != self.net.vocab.pad_idx  # actual values
 
@@ -83,6 +93,20 @@ class PEINTModule(PLMRLitModule):
         with torch.no_grad():
             x_logits, y_logits = self(x, y, t, x_pad_mask, y_pad_mask)
 
+        loss_info = {}
+
+        if dataloader_idx == 0:
+            mlm_loss = F.cross_entropy(
+                x_logits.transpose(-1, -2),
+                x_targets,
+                ignore_index=self.net.vocab.pad_idx,
+                reduction="mean",
+            )  # mlm doesnt' care about time
+
+            mlm_ppl = torch.exp(mlm_loss.detach())
+            loss_info["mlm_loss"] = mlm_loss
+            loss_info["mlm_ppl"] = mlm_ppl
+
         y_loss = F.cross_entropy(
             y_logits.transpose(-1, -2),
             y_targets,
@@ -90,30 +114,22 @@ class PEINTModule(PLMRLitModule):
             reduction="none",
         )  # keep unreduced to get per-site time likelihood
 
-        mlm_loss = F.cross_entropy(
-            x_logits.transpose(-1, -2),
-            x_targets,
-            ignore_index=self.net.vocab.pad_idx,
-            reduction="mean",
-        )  # mlm doesnt' care about time
-
-        mlm_ppl = torch.exp(mlm_loss.detach())
+        if (
+            dataloader_idx > 0
+        ):  # this is a dms dataset, just return the perplexities and fitness scores
+            ppls = torch.exp(y_loss[yt_mask].mean(-1)).detach().cpu().numpy()  # (bs,)
+            self.validation_step_outputs[dataloader_idx].append((ppls, muts))
+            return ppls, muts
 
         mask_loss = -1 * y_loss[yt_mask]  # log likelihoods (bs, seq_len)
-
         ppl_per_bin = {
             b.item(): mask_loss[tbins == b].cpu().numpy() for b in t
         }  # gets the actual bin idx
-
         acc = (y_logits.argmax(-1)[yt_mask] == y_targets[yt_mask]).float().mean().detach()
 
         loss = y_loss[yt_mask].mean()
-        loss_info = {
-            "ppl": torch.exp(y_loss[yt_mask].mean()),
-            "acc": acc,
-            "mlm_loss": mlm_loss,
-            "mlm_ppl": mlm_ppl,
-        }
+        loss_info["ppl"] = torch.exp(y_loss[yt_mask].mean())
+        loss_info["acc"] = acc
 
         # update and log validation loss
         self.val_loss(loss)
@@ -124,6 +140,18 @@ class PEINTModule(PLMRLitModule):
             self.log(f"val/{k}", v, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
         return {"loss": loss, **loss_info}, ppl_per_bin
+
+    def on_validation_epoch_end(self, *args, **kwargs) -> None:
+        super().on_validation_epoch_end(*args, **kwargs)
+        if (
+            not self.trainer.sanity_checking
+            and (self.current_epoch % self.hparams.val_metrics_every_n_epoch) == 0
+        ):
+            for _, metric in self.metrics.items():
+                _metrics = metric.compute(self.validation_step_outputs)
+                _metrics = metric.aggregate(_metrics)
+                for key, value in _metrics.items():
+                    self.log(f"val/{metric.name}/{key}", value, sync_dist=True, prog_bar=True)
 
     def predict_step(self, batch, batch_idx):
         [x, t] = batch
@@ -248,16 +276,30 @@ class PIPETModule(PEINTModule):
         }
         return loss, metrics
 
-    def validation_step(self, batch, batch_idx):
-        [
-            enc_inputs,
-            enc_targets,
-            dec_inputs,
-            dec_targets,
-            distances_tensor,
-            attn_mask_enc_lengths,
-            attn_mask_dec_lengths,
-        ] = batch
+    def validation_step(self, batch, batch_idx, dataloader_idx: int):
+        # Handle different batch formats based on dataloader
+        if dataloader_idx == 0:
+            # Standard training format
+            [
+                enc_inputs,
+                enc_targets,
+                dec_inputs,
+                dec_targets,
+                distances_tensor,
+                attn_mask_enc_lengths,
+                attn_mask_dec_lengths,
+            ] = batch
+        else:
+            # DMS format: [x, y_src, y_tgt, mut_str, t, x_pad_mask, y_src_pad_mask, x_sizes, y_sizes]
+            [
+                enc_inputs,
+                dec_inputs,
+                dec_targets,
+                mut_str,
+                distances_tensor,
+                attn_mask_enc_lengths,
+                attn_mask_dec_lengths,
+            ] = batch
 
         with torch.no_grad():
             outputs = self(
@@ -269,15 +311,17 @@ class PIPETModule(PEINTModule):
             )
         enc_logits, dec_logits = outputs["enc_logits"], outputs["dec_logits"]
 
-        mlm_loss = F.cross_entropy(
-            enc_logits.transpose(-1, -2),
-            enc_targets,
-            ignore_index=self.net.vocab.pad_idx,
-            reduction="mean",
-        )
-        mlm_ppl = torch.exp(mlm_loss.detach())
+        # Calculate MLM loss only if we have encoder targets (dataloader_idx == 0)
+        if dataloader_idx == 0 and enc_targets is not None:
+            mlm_loss = F.cross_entropy(
+                enc_logits.transpose(-1, -2),
+                enc_targets,
+                ignore_index=self.net.vocab.pad_idx,
+                reduction="mean",
+            )
+            mlm_ppl = torch.exp(mlm_loss.detach())
 
-        # Keep unreduced to get per-site time likelihood
+        # Keep unreduced to get per-site time likelihood (nll)
         clm_loss = F.cross_entropy(
             dec_logits.transpose(-1, -2),
             dec_targets,
@@ -307,6 +351,16 @@ class PIPETModule(PEINTModule):
         }
         ll_per_dist = (x_ll_per_dist, y_ll_per_dist)
 
+        # Handle different return formats based on dataloader
+        if dataloader_idx > 0:  # DMS dataset
+            # For DMS, return perplexities and mutation strings
+            padding_mask = dec_targets != self.net.vocab.pad_idx
+            nll = (clm_loss * padding_mask).mean(-1)
+            ppls = torch.exp(nll).detach().cpu().numpy()  # (bs,)
+            self.validation_step_outputs[dataloader_idx].append((ppls, mut_str))
+            return ppls, mut_str  # Two arrays of length batch_size
+
+        # Standard validation (dataloader_idx == 0)
         # Average decoder metrics
         padding_mask = dec_targets != self.net.vocab.pad_idx
         clm_loss_mean = clm_loss[padding_mask].mean()
@@ -335,4 +389,3 @@ class PIPETModule(PEINTModule):
 
     def predict_step(self, batch, batch_idx):
         raise NotImplementedError("PIPETModule does not implement predict_step")
-

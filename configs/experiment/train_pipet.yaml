@@ -6,11 +6,12 @@
 defaults:
   - override /data: plmr
   - override /data/dataset: pipet
+  - override /data/dataset@data.dataset_val: dms
   - override /vocab: esm
   - override /callbacks: default
   - override /callbacks: grad_norm
   - override /callbacks: val_likelihood
-  - override /metrics: none
+  - override /metrics: koenig_dms
   - override /model: pipet
   - override /net: pipet
   - override /trainer: gpu
@@ -28,7 +29,7 @@ trainer:
   max_epochs: null
   max_steps: 300000
   val_check_interval: 4000
-  accumulate_grad_batches: 6
+  accumulate_grad_batches: 4
   check_val_every_n_epoch: null
   gradient_clip_val: 1.0
   log_every_n_steps: 1
@@ -36,13 +37,13 @@ trainer:
 
 callbacks:
   model_checkpoint:
-    monitor: val/loss
+    monitor: val/loss/dataloader_idx_0
     mode: min
-    every_n_train_steps: 4000
+    every_n_train_steps: 5000
   lr_monitor:
     logging_interval: step
   early_stopping:
-    monitor: val/loss
+    monitor: val/loss/dataloader_idx_0
     mode: min
     patience: 50
 
@@ -63,13 +64,20 @@ net:
   use_attention_bias: true
   finetune_esm: false
   num_heads: 20
-  num_encoder_layers: 3
-  num_decoder_layers: 3
+  num_encoder_layers: 6
+  num_decoder_layers: 6
   chain_break_token: .
-  decoder_self_attn_type: intra_inter
+  encoder_self_attn_type: intra_inter
+  decoder_self_attn_type: full
 
 data:
+  num_workers: 0
   batch_size: 16
+  train_val_split: [0.95, 0.05]
+  dataset_val:
+    _target_: peint.data.datasets.pipet.EncodedDMSDataset
+    dataset:
+      data_file: ${paths.data_dir}/wyatt/dms/mut_joint_pipet.txt
 
 logger:
   wandb:

@@ -5,7 +5,7 @@ defaults:
   - dataset@dataset_test: none
   - _self_
 
-_target_: plmr.data.datamodule.PLMRDataModule
+_target_: peint.data.datamodule.PLMRDataModule
 
 batch_size: 64 # Needs to be divisible by the number of devices (e.g., if in a distributed setup)
 generator_seed: 42

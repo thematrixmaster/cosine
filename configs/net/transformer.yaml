@@ -1,4 +1,4 @@
-_target_: plmr.models.nets.transformer.VanillaTransformer
+_target_: peint.models.nets.transformer.VanillaTransformer
 vocab_size: 128
 output_size: 128
 hidden_dim: 256

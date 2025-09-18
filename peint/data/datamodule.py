@@ -1,9 +1,10 @@
-from typing import Any, Optional, Tuple
+from typing import Any, List, Optional, Tuple, Union
 
 import torch
-from evo.dataset import CollatableDataset
 from lightning import LightningDataModule
 from torch.utils.data import DataLoader, Dataset, random_split
+
+from evo.dataset import CollatableDataset
 
 
 class PLMRDataModule(LightningDataModule):
@@ -13,8 +14,8 @@ class PLMRDataModule(LightningDataModule):
         self,
         dataset: Optional[CollatableDataset] = None,
         dataset_train: Optional[CollatableDataset] = None,
-        dataset_val: Optional[CollatableDataset] = None,
-        dataset_test: Optional[CollatableDataset] = None,
+        dataset_val: Optional[Union[CollatableDataset, List[CollatableDataset]]] = None,
+        dataset_test: Optional[Union[CollatableDataset, List[CollatableDataset]]] = None,
         batch_size: int = 64,
         generator_seed: int = 42,
         train_val_split: Tuple[float, float] = (0.95, 0.05),
@@ -26,7 +27,9 @@ class PLMRDataModule(LightningDataModule):
 
         # this line allows to access init params with 'self.hparams' attribute
         # also ensures init params will be stored in ckpt
-        self.save_hyperparameters(logger=False)
+        self.save_hyperparameters(
+            logger=False, ignore=["dataset", "dataset_train", "dataset_val", "dataset_test"]
+        )
 
         assert (
             dataset is not None or dataset_train is not None
@@ -34,8 +37,21 @@ class PLMRDataModule(LightningDataModule):
 
         self.dataset: Optional[Dataset] = dataset
         self.data_train: Optional[Dataset] = dataset_train
-        self.data_val: Optional[Dataset] = dataset_val
-        self.data_test: Optional[Dataset] = dataset_test
+
+        # Convert single datasets to lists for uniform handling
+        if dataset_val is None:
+            self.data_val: List[Dataset] = []
+        elif isinstance(dataset_val, list):
+            self.data_val: List[Dataset] = dataset_val
+        else:
+            self.data_val: List[Dataset] = [dataset_val]
+
+        if dataset_test is None:
+            self.data_test: List[Dataset] = []
+        elif isinstance(dataset_test, list):
+            self.data_test: List[Dataset] = dataset_test
+        else:
+            self.data_test: List[Dataset] = [dataset_test]
 
         self.collate_fn = dataset.collater if hasattr(dataset, "collater") else None
         self.batch_size_per_device = batch_size
@@ -48,15 +64,20 @@ class PLMRDataModule(LightningDataModule):
                 )
             self.batch_size_per_device = self.hparams.batch_size // self.trainer.world_size
         if stage is None or stage == "fit":
-            if not self.data_train and not self.data_val:
-                self.data_train, self.data_val = random_split(
+            # Only perform splitting if dataset_train is not provided
+            if not self.data_train:
+                train_split, val_split = random_split(
                     dataset=self.dataset,
                     lengths=self.hparams.train_val_split,
                     generator=torch.Generator().manual_seed(self.hparams.generator_seed),
                 )
+                self.data_train = train_split
+                # Insert the split validation set at the beginning
+                self.data_val.insert(0, val_split)
         elif stage in ("predict", "test") and not self.data_test:
-            self.data_test = self.dataset
-            self.data_test.training = False
+            self.data_test = [self.dataset]
+            if hasattr(self.dataset, "training"):
+                self.dataset.training = False
 
     def _dataloader_template(self, dataset: Dataset[Any], training=True) -> DataLoader[Any]:
         collate_fn = dataset.collater if hasattr(dataset, "collater") else self.collate_fn
@@ -74,16 +95,21 @@ class PLMRDataModule(LightningDataModule):
     def train_dataloader(self) -> DataLoader[Any]:
         return self._dataloader_template(self.data_train)
 
-    def val_dataloader(self) -> DataLoader[Any]:
-        return self._dataloader_template(self.data_val, training=False)
+    def val_dataloader(self) -> Union[DataLoader[Any], List[DataLoader[Any]]]:
+        if len(self.data_val) == 1:
+            return self._dataloader_template(self.data_val[0], training=False)
+        return [self._dataloader_template(dataset, training=False) for dataset in self.data_val]
 
-    def test_dataloader(self) -> DataLoader[Any]:
-        return self._dataloader_template(self.data_test, training=False)
+    def test_dataloader(self) -> Union[DataLoader[Any], List[DataLoader[Any]]]:
+        if len(self.data_test) == 1:
+            return self._dataloader_template(self.data_test[0], training=False)
+        return [self._dataloader_template(dataset, training=False) for dataset in self.data_test]
 
 
 # Usage
 if __name__ == "__main__":
     from esm.data import Alphabet
+
     from evo.dataset import (
         EncodedMSADataset,
         EncodedParquetDataset,

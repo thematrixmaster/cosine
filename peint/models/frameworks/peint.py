@@ -1,16 +1,16 @@
 import os
 import random
+import sys
 from collections import deque
 from itertools import product
 from typing import Callable, List
 
-import torch
 import numpy as np
-
+import torch
 from ete3 import Tree
+
 from evo.sequence import _FASTA_VOCAB
 from evo.tokenization import Vocab
-
 from peint.models.modules.peint_module import PEINTModule
 from peint.models.nets.peint import PEINT
 
@@ -62,11 +62,15 @@ def load_from_new_checkpoint(checkpoint_path: str, device: str = "cpu") -> PEINT
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint file {checkpoint_path} does not exist.")
 
+    import peint
+
+    sys.modules["plmr"] = peint
     checkpoint = torch.load(checkpoint_path, map_location=device)
     hyperparams = checkpoint.get("hyper_parameters", {})
     net = hyperparams.get("net")
 
-    if not isinstance(net, PEINT):
+    _net_type = type(net).__name__
+    if _net_type != "PEINT":
         raise ValueError("Checkpoint does not contain a valid PEINT model.")
 
     if net.finetune_esm:
@@ -84,6 +88,7 @@ def load_from_new_checkpoint(checkpoint_path: str, device: str = "cpu") -> PEINT
         )
         module = PEINTModule.load_from_checkpoint(checkpoint_path, net=peint, strict=False)
 
+    del sys.modules["plmr"]
     return module.to(device).eval()
 
 

@@ -2201,6 +2201,7 @@ class MultiSequenceEncoderBlock(nn.Module):
         ffn_embed_dim: int,
         dropout_p: float,
         layer_idx: Optional[int] = None,
+        self_attn_type: str = "intra_inter",  # Default to intra_inter
         **kwargs,
     ):
         super().__init__()
@@ -2211,13 +2212,35 @@ class MultiSequenceEncoderBlock(nn.Module):
         self.dropout_p = dropout_p
         self.ffn_embed_dim = ffn_embed_dim
 
-        self.self_attn = IntraOnlyMultiSequenceSelfAttention(
-            hidden_size=embed_dim,
-            num_attention_heads=attention_heads,
-            dropout_p=dropout_p,
-            causal=False,
-            layer_idx=layer_idx,
-        )
+        if self_attn_type == "full":
+            self.self_attn = FullMultiSequenceSelfAttention(
+                hidden_size=embed_dim,
+                num_attention_heads=attention_heads,
+                dropout_p=dropout_p,
+                causal=False,
+                layer_idx=layer_idx,
+            )
+        elif self_attn_type == "intra_only":
+            self.self_attn = IntraOnlyMultiSequenceSelfAttention(
+                hidden_size=embed_dim,
+                num_attention_heads=attention_heads,
+                dropout_p=dropout_p,
+                causal=False,
+                layer_idx=layer_idx,
+            )
+        elif self_attn_type == "intra_inter":
+            self.self_attn = DecoupledIntraInterMultiSequenceSelfAttention(
+                hidden_size=embed_dim,
+                num_attention_heads=attention_heads,
+                dropout_p=dropout_p,
+                causal=False,
+                layer_idx=layer_idx,
+                **kwargs,
+            )
+        else:
+            raise ValueError(
+                f"self_attn_type should be 'full', 'intra_only' or 'intra_inter', not {self_attn_type}"
+            )
 
         self.self_attn_layer_norm = nn.LayerNorm(embed_dim)
         self.final_layer_norm = nn.LayerNorm(embed_dim)
@@ -2247,7 +2270,11 @@ class MultiSequenceEncoderBlock(nn.Module):
 
         residual = x
         x = self.self_attn_layer_norm(x)
-        x = self.self_attn(x, attn_mask)
+        if isinstance(self.self_attn, DecoupledIntraInterMultiSequenceSelfAttention):
+            # DecoupledIntraInterMultiSequenceSelfAttention returns a tuple (output, attention_weights)
+            x, _ = self.self_attn(x, attn_mask)
+        else:
+            x = self.self_attn(x, attn_mask)
         x = x + residual
 
         residual = x

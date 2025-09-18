@@ -1,4 +1,4 @@
-_target_: plmr.models.nets.peint.PIPET.from_pretrained_esm2
+_target_: peint.models.nets.peint.PIPET.from_pretrained_esm2
 
 num_heads: 20
 embed_dim: 640

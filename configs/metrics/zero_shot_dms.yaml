@@ -1,0 +1,5 @@
+_target_: peint.metrics.peint.ZeroShotDMS
+
+datafile: ${paths.data_dir}/
+log_transform: true
+name: zero_shot_dms

@@ -6,11 +6,12 @@
 defaults:
   - override /data: plmr
   - override /data/dataset: peint
+  - override /data/dataset@data.dataset_val: dms
   - override /vocab: esm
   - override /callbacks: default
   - override /callbacks: grad_norm
   - override /callbacks: val_likelihood
-  - override /metrics: none
+  - override /metrics: koenig_dms
   - override /model: peint
   - override /net: peint
   - override /trainer: gpu
@@ -36,13 +37,13 @@ trainer:
 
 callbacks:
   model_checkpoint:
-    monitor: val/loss
+    monitor: val/loss/dataloader_idx_0
     mode: min
     every_n_train_steps: 4000
   lr_monitor:
     logging_interval: step
   early_stopping:
-    monitor: val/loss
+    monitor: val/loss/dataloader_idx_0
     mode: min
     patience: 50
 

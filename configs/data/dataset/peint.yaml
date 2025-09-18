@@ -1,4 +1,4 @@
-_target_: plmr.data.datasets.peint.EncodedPEINTDataset
+_target_: peint.data.datasets.peint.EncodedPEINTDataset
 
 dataset:
   _target_: torch.utils.data.ConcatDataset

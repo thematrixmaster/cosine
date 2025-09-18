@@ -1,1 +1,1 @@
-_target_: plmr.utils.callbacks.GradNormCallback
+_target_: peint.utils.callbacks.GradNormCallback

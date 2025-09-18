@@ -17,6 +17,9 @@ We use [uv](https://docs.astral.sh/uv/getting-started/installation/) for python 
 # Create a venv for this project using python 3.10
 uv venv --python 3.10
 
+# We use cuda/12.8 for this project, but other versions should be ok
+module load cuda/12.8
+
 # Activate the venv
 source .venv/bin/activate
 
