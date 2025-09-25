@@ -3,23 +3,29 @@ import torch
 
 def _expand_distances_to_seqlen(distances_in_length, attn_mask_in_length) -> torch.Tensor:
     """
-    Expand the per sequence distance to a positional encoding tensor
-    using the length of each sequence in the batch
-    If distances_in_length and attn_mask_in_length have different length
-    the output will be the length of attn_mask_in_length
+    Expand the per sequence distance to a positional encoding tensor.
+
+    Args:
+        distances_in_length: (batch_size, num_chains) - time values per chain
+        attn_mask_in_length: (batch_size, num_chains) - lengths per chain
+
+    Returns:
+        pos: (batch_size, max_seq_len) - time values expanded to token positions
     """
-    pos = torch.zeros_like(distances_in_length)
-    B, _ = distances_in_length.size()
+    B, num_chains = distances_in_length.shape
+    max_seq_len = attn_mask_in_length.sum(dim=1).max().item()
+    pos = torch.zeros(B, max_seq_len, device=distances_in_length.device, dtype=torch.float32)
+
     for i in range(B):
-        lengths = attn_mask_in_length[
-            i, torch.nonzero(attn_mask_in_length[i, :], as_tuple=False).flatten()
-        ].long()
-        dists = distances_in_length[
-            i, torch.nonzero(attn_mask_in_length[i, :], as_tuple=False).flatten()
-        ].float()
-        # Repeat dists for each length
-        dists2 = dists.repeat_interleave(lengths)
-        pos[i, : dists2.size(0)] = dists2
+        current_pos = 0
+        for j in range(num_chains):
+            chain_length = attn_mask_in_length[i, j].item()
+            if chain_length > 0:
+                chain_distance = distances_in_length[i, j].item()
+                # Fill positions for this chain with its distance value
+                pos[i, current_pos : current_pos + chain_length] = chain_distance
+                current_pos += chain_length
+
     return pos
 
 
@@ -28,73 +34,116 @@ def _create_sequence_mask(attn_mask_in_length: torch.Tensor, sequence_idx: int) 
     Generate a boolean mask for a specific sequence index across all batch elements.
 
     Args:
-        attn_mask_in_length (torch.Tensor): Tensor of shape (B, L) containing nonzero elements
-            that indicate the lengths of sequences in each batch element
+        attn_mask_in_length (torch.Tensor): Tensor of shape (B, num_chains) containing
+            the lengths of each chain in each batch element
         sequence_idx (int): The index of the sequence for which to generate the mask
 
     Returns:
-        torch.Tensor: Boolean tensor of shape (B, L) where True indicates positions
+        torch.Tensor: Boolean tensor of shape (B, max_seq_len) where True indicates positions
             belonging to the sequence_idx'th sequence in each batch element
 
     Example:
         >>> attn_mask = torch.tensor([
-        ...     [2, 4, 0, 0, 0, 0],
-        ...     [3, 2, 0, 0, 0, 0]
+        ...     [2, 4],  # First batch: chain 0 has length 2, chain 1 has length 4
+        ...     [3, 2]   # Second batch: chain 0 has length 3, chain 1 has length 2
         ... ])
-        >>> get_sequence_mask(attn_mask, 0)
+        >>> _create_sequence_mask(attn_mask, 0)
         tensor([[ True,  True, False, False, False, False],
                 [ True,  True,  True, False, False, False]])
-        >>> get_sequence_mask(attn_mask, 1)
+        >>> _create_sequence_mask(attn_mask, 1)
         tensor([[False, False,  True,  True,  True,  True],
                 [False, False, False,  True,  True, False]])
     """
-    # Get batch size and sequence length
-    batch_size, seq_len = attn_mask_in_length.shape
+    batch_size, num_chains = attn_mask_in_length.shape
+    max_seq_len = attn_mask_in_length.sum(dim=1).max().item()
     device = attn_mask_in_length.device
 
-    # Create cumulative sum of lengths, padding with zeros
-    cumsum = torch.zeros((batch_size, seq_len + 1), device=device)
-    cumsum[:, 1:] = torch.cumsum(attn_mask_in_length, dim=1)
+    # Create mask tensor
+    mask = torch.zeros(batch_size, max_seq_len, dtype=torch.bool, device=device)
 
-    # Create position indices tensor
-    positions = torch.arange(seq_len, device=device).expand(batch_size, -1)
-
-    # Get start and end positions for the requested sequence
-    start_pos = cumsum[:, sequence_idx]
-    end_pos = cumsum[:, sequence_idx + 1]
-
-    # Create mask where True indicates positions within the sequence_idx'th sequence
-    mask = (positions >= start_pos.unsqueeze(1)) & (positions < end_pos.unsqueeze(1))
+    for i in range(batch_size):
+        current_pos = 0
+        for j in range(num_chains):
+            chain_length = attn_mask_in_length[i, j].item()
+            if chain_length > 0:
+                if j == sequence_idx:
+                    # Mark positions for the requested sequence
+                    mask[i, current_pos : current_pos + chain_length] = True
+                current_pos += chain_length
 
     return mask
 
 
-def _create_padding_mask(attention_mask_in_length: torch.Tensor) -> torch.Tensor:
+def _create_padding_mask(
+    attention_mask_in_length: torch.Tensor, max_seq_len: int = None
+) -> torch.Tensor:
     """
-    Create an attention padding mask from the lengths of sequences in batch
-    The padding starts at the sum of the lengths of sequences in the batch
-    Shape (B, L), True for positions that are NOT paddings
+    Create an attention padding mask from the lengths of chains in batch.
+
+    Args:
+        attention_mask_in_length: (batch_size, num_chains) - lengths of each chain
+        max_seq_len: Optional maximum sequence length to use instead of calculating from data
+
+    Returns:
+        mask: (batch_size, max_seq_len) - True for positions that are NOT paddings
     """
-    batch_size, seq_len = attention_mask_in_length.shape
-    mask = torch.arange(seq_len, device=attention_mask_in_length.device).expand(batch_size, seq_len)
-    return mask < attention_mask_in_length.sum(dim=-1, keepdim=True)
+    batch_size, num_chains = attention_mask_in_length.shape
+    if max_seq_len is None:
+        max_seq_len = attention_mask_in_length.sum(dim=1).max().item()
+    device = attention_mask_in_length.device
+
+    # Create position indices for the full sequence length
+    positions = torch.arange(max_seq_len, device=device).expand(batch_size, -1)
+    # Total sequence lengths per batch element
+    total_lengths = attention_mask_in_length.sum(dim=1, keepdim=True)
+
+    return positions < total_lengths
 
 
 def _create_chain_mask(attention_mask_in_length: torch.Tensor, which_attn: str) -> torch.Tensor:
     """
     Helper function to create mask of shape (B, L, L) for residue pairs
-    that are intra or inter chain
+    that are intra or inter chain.
+
+    Args:
+        attention_mask_in_length: (batch_size, num_chains) - lengths of each chain
+        which_attn: "intra" or "inter"
+
+    Returns:
+        chain_mask: (batch_size, max_seq_len, max_seq_len) - attention mask
     """
-    bsz, seq_len = attention_mask_in_length.shape
-    chain_mask = torch.full((bsz, seq_len, seq_len), False, device=attention_mask_in_length.device)
+    bsz, num_chains = attention_mask_in_length.shape
+    max_seq_len = attention_mask_in_length.sum(dim=1).max().item()
+    chain_mask = torch.full(
+        (bsz, max_seq_len, max_seq_len), False, device=attention_mask_in_length.device
+    )
+
     for b in range(bsz):
-        len_x, len_y = attention_mask_in_length[b][:2]
+        current_pos = 0
+        chain_positions = []
+
+        # Calculate start and end positions for each chain
+        for j in range(num_chains):
+            chain_length = attention_mask_in_length[b, j].item()
+            if chain_length > 0:
+                chain_positions.append((current_pos, current_pos + chain_length))
+                current_pos += chain_length
+            else:
+                chain_positions.append((0, 0))  # Empty chain
+
+        # Create intra-chain or inter-chain masks
         if which_attn == "intra":
-            chain_mask[b, :len_x, :len_x] = True
-            chain_mask[b, len_x : len_x + len_y, len_x : len_x + len_y] = True
+            # Allow attention within each chain
+            for start, end in chain_positions:
+                if end > start:
+                    chain_mask[b, start:end, start:end] = True
         elif which_attn == "inter":
-            chain_mask[b, :len_x, len_x : len_x + len_y] = True
-            chain_mask[b, len_x : len_x + len_y, :len_x] = True
+            # Allow attention between different chains
+            for i, (start_i, end_i) in enumerate(chain_positions):
+                for j, (start_j, end_j) in enumerate(chain_positions):
+                    if i != j and end_i > start_i and end_j > start_j:
+                        chain_mask[b, start_i:end_i, start_j:end_j] = True
         else:
             raise ValueError("which_attn should be 'intra' or 'inter'")
+
     return chain_mask

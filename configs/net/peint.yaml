@@ -7,8 +7,13 @@ num_encoder_layers: 3
 num_decoder_layers: 3
 
 dropout_p: 0.0
+chain_break_token: .
 use_attention_bias: true
 
+encoder_self_attn_type: full
+decoder_self_attn_type: full
+
+embed_x_per_chain: false
 finetune_esm: false
 tie_lm_heads: true
 ckpt_path: null

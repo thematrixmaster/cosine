@@ -1,26 +1,30 @@
-_target_: peint.data.datasets.pipet.EncodedPIPETDataset
+_target_: peint.data.datasets.peint.EncodedPEINTDataset
 
 dataset:
   _target_: torch.utils.data.ConcatDataset
   datasets:
-    - _target_: evo.dataset.CherriesDataset
+    - _target_: evo.dataset.ComplexCherriesDataset
       data_file: ${paths.data_dir}/wyatt/all/edges_joint_pipet/d1.txt
-      cache_indices: false
+      sep_token: .
       min_t: 5e-3
       quantize_t: false
-    - _target_: evo.dataset.CherriesDataset
+      cache_indices: false
+    - _target_: evo.dataset.ComplexCherriesDataset
       data_file: ${paths.data_dir}/wyatt/all/edges_joint_pipet/d2.txt
-      cache_indices: false
+      sep_token: .
       min_t: 5e-3
       quantize_t: false
-    - _target_: evo.dataset.CherriesDataset
+      cache_indices: false
+    - _target_: evo.dataset.ComplexCherriesDataset
       data_file: ${paths.data_dir}/wyatt/all/edges_joint_pipet/d3.txt
-      cache_indices: false
+      sep_token: .
       min_t: 5e-3
       quantize_t: false
+      cache_indices: false
 
+sep_token: .
 vocab: ${vocab}
 mask_prob: 0.15
 random_token_prob: 0.0
 leave_unmasked_prob: 0.0
-sep_token: .
+embed_x_per_chain: false
