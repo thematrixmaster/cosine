@@ -78,6 +78,10 @@ class EncodedPEINTDataset(TorchWrapperDataset):
         else:
             ts = np.array(ts, dtype=object)
 
+        # Apply padding to the right of x_sizes, y_sizes to make them the same length as x_src, y_src
+        x_sizes = torch.nn.functional.pad(x_sizes, (0, len(x_src) - len(x_sizes)), value=0)
+        y_sizes = torch.nn.functional.pad(y_sizes, (0, len(y_src) - len(y_sizes)), value=0)
+
         return x_src, x_tgt, y_src, y_tgt, ts, x_sizes, y_sizes
 
     def collater(self, batch):

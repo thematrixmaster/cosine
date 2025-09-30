@@ -123,33 +123,15 @@ class MultiSequenceRotaryPositionalEncoding(nn.Module):
         return emb.cos(), emb.sin()
 
     def _create_positional_indices(self, index_tensor: torch.Tensor):
-        """
-        Create positional indices from chain lengths.
-
-        Args:
-            index_tensor: (batch_size, num_chains) - lengths of each chain
-
-        Returns:
-            positions: (batch_size, max_seq_len) - positional indices for each token
-        """
-        B, num_chains = index_tensor.shape
+        B, _ = index_tensor.shape
         device = index_tensor.device
-        max_seq_len = index_tensor.sum(dim=1).max().item()
-
         # Create position indices
-        dtype = torch.float32 if self.use_fp32_for_idx else torch.long
-        positions = torch.zeros(B, max_seq_len, dtype=dtype, device=device)
-
+        dtype = torch.float32 if self.use_fp32_for_idx else index_tensor.dtype
+        positions = torch.zeros_like(index_tensor, dtype=dtype, device=device)
         for i in range(B):
-            current_pos = 0
-            for j in range(num_chains):
-                chain_length = index_tensor[i, j].item()
-                if chain_length > 0:
-                    # Create positions 0, 1, 2, ... for this chain
-                    chain_positions = torch.arange(chain_length, device=device, dtype=dtype)
-                    positions[i, current_pos : current_pos + chain_length] = chain_positions
-                    current_pos += chain_length
-
+            lengths = index_tensor[i, torch.nonzero(index_tensor[i, :], as_tuple=False).flatten()]
+            pos = torch.cat([torch.arange(l, device=device) for l in lengths], dim=0)
+            positions[i, : pos.shape[0]] = pos
         return positions
 
     def forward(self, x: torch.Tensor, index_tensor: torch.Tensor):
@@ -158,8 +140,8 @@ class MultiSequenceRotaryPositionalEncoding(nn.Module):
 
         Args:
             x (torch.Tensor): Input tensor of shape (batch_size, seq_length, num_heads, head_dim).
-            index_tensor (torch.Tensor): Tensor of shape (batch_size, num_chains) containing
-                                         the lengths of each chain.
+            index_tensor (torch.Tensor): Tensor of shape (batch_size, seq_length) containing
+                                         the lengths of sequences in each batch.
 
         Returns:
             torch.Tensor: Tensor of the same shape as input `x` with rotary positional
@@ -169,9 +151,6 @@ class MultiSequenceRotaryPositionalEncoding(nn.Module):
 
         # Create positional indexes based on the index_tensor
         positions = self._create_positional_indices(index_tensor)
-
-        # Trim positions to match actual sequence length
-        positions = positions[:, :L]
 
         # Compute RoPE components
         cos, sin = self._compute_rope(positions)
@@ -1286,7 +1265,6 @@ class ESMEncoderBlock(nn.Module):
         x = self.fc2(x)
         x = x + residual
 
-        # return x, att
         return x
 
 
@@ -1805,8 +1783,7 @@ class FullMultiSequenceSelfAttention(nn.Module):
         hidden_size,
         num_attention_heads,
         dropout_p=0.0,
-        bias: bool = True,
-        causal: bool = False,
+        causal=False,
         layer_idx: Optional[int] = None,
     ):
         super().__init__()
@@ -1817,8 +1794,8 @@ class FullMultiSequenceSelfAttention(nn.Module):
             self.head_dim * num_attention_heads == hidden_size
         ), "hidden_size must be divisible by num_attention_heads"
 
-        self.qkv_proj = nn.Linear(hidden_size, 3 * hidden_size, bias=bias)
-        self.out_proj = nn.Linear(hidden_size, hidden_size, bias=bias)
+        self.qkv_proj = nn.Linear(hidden_size, 3 * hidden_size)
+        self.out_proj = nn.Linear(hidden_size, hidden_size)
 
         self.rotary_emb = MultiSequenceRotaryPositionalEncoding(
             dim=self.head_dim,
@@ -1869,8 +1846,7 @@ class FullMultiSequenceSelfAttention(nn.Module):
         # Note: the main difference to Treeformer is the padding_mask here
         # is on the full sequence and we use `unpad_input`
         # rather than `unpad_input_for_concatenated_sequences` with attention_mask_in_length
-        # Use the actual sequence length to ensure indices are within bounds
-        padding_mask = _create_padding_mask(attention_mask_in_length, max_seq_len=seq_len)
+        padding_mask = _create_padding_mask(attention_mask_in_length)
         # Unpad inputs
         qkv_unpad, indices, cu_seqlens, max_seqlen, _ = unpad_input(qkv_rotary, padding_mask)
         qkv_unpad = rearrange(
@@ -2028,7 +2004,7 @@ class DecoupledIntraInterMultiSequenceSelfAttention(nn.Module):
             attn_weights = attn_weights.masked_fill(causal_mask, float("-inf"))
 
         # Create and apply padding mask explicitly
-        padding_mask = _create_padding_mask(attention_mask_in_length, max_seq_len=seq_len)
+        padding_mask = _create_padding_mask(attention_mask_in_length)
         # Add head dims and dimension for the other sequence
         # Shape (B, 1, 1, L)
         attn_weights = attn_weights.masked_fill(
@@ -2187,8 +2163,8 @@ class MultiSequenceCrossAttention(nn.Module):
         kv_encoded = torch.stack([k_rotary, kv[:, :, 1]], dim=2)
 
         # Create attention masks
-        q_mask = _create_padding_mask(attention_mask_in_length_q, max_seq_len=q_len)
-        kv_mask = _create_padding_mask(attention_mask_in_length_kv, max_seq_len=kv_len)
+        q_mask = _create_padding_mask(attention_mask_in_length_q)
+        kv_mask = _create_padding_mask(attention_mask_in_length_kv)
 
         # Unpad inputs
         q, idx_q, cu_seqlens_q, max_s_q, _ = unpad_input(q_rotary, q_mask)
@@ -2290,7 +2266,7 @@ class MultiSequenceEncoderBlock(nn.Module):
             [0, 1, 2, 0, 1, 2, 3, 4, 0, 0]]
         NB: the final 0s don't matter because they go beyond the sequence length and will be ignored by the unpad.
         """
-
+        # atten block
         residual = x
         x = self.self_attn_layer_norm(x)
         if isinstance(self.self_attn, DecoupledIntraInterMultiSequenceSelfAttention):
@@ -2298,13 +2274,13 @@ class MultiSequenceEncoderBlock(nn.Module):
             x, _ = self.self_attn(x, attn_mask)
         else:
             x = self.self_attn(x, attn_mask)
-
         x = x + residual
+        # MLP block
         residual = x
         x = self.final_layer_norm(x)
         x = gelu(self.fc1(x))
         x = self.fc2(x)
-        x = residual + x
+        x = x + residual
 
         return x
 
@@ -2367,6 +2343,7 @@ class MultiSequenceDecoderBlock(nn.Module):
         self.self_attn_layer_norm = nn.LayerNorm(embed_dim)
         self.cross_attn_layer_norm = nn.LayerNorm(embed_dim)
         self.final_layer_norm = nn.LayerNorm(embed_dim)
+
         self.fc1 = nn.Linear(embed_dim, ffn_embed_dim)
         self.fc2 = nn.Linear(ffn_embed_dim, embed_dim)
 

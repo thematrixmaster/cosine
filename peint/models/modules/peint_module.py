@@ -199,12 +199,3 @@ class PEINTModule(PLMRLitModule):
                 },
             }
         return {"optimizer": optimizer}
-
-    def state_dict(self, *args, **kwargs):
-        # Remove ESM2 specific keys from the state dict, if frozen
-        state_dict = super().state_dict(*args, **kwargs)
-        if not self.net.finetune_esm:
-            keys_to_remove = [key for key in state_dict.keys() if "net.esm" in key]
-            for key in keys_to_remove:
-                del state_dict[key]
-        return state_dict

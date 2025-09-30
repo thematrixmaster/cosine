@@ -1,4 +1,12 @@
-_target_: peint.models.nets.peint.PEINT.from_pretrained_esm2
+_target_: peint.models.nets.peint.PEINT
+
+evo_vocab: ${vocab}
+
+enc_model:
+  _target_: peint.models.nets.peint.ESMEncoder.from_pretrained
+  finetune: false
+  embed_x_per_chain: false
+  ckpt_path: null
 
 num_heads: 20
 embed_dim: 640
@@ -9,11 +17,3 @@ num_decoder_layers: 3
 dropout_p: 0.0
 chain_break_token: .
 use_attention_bias: true
-
-encoder_self_attn_type: full
-decoder_self_attn_type: full
-
-embed_x_per_chain: false
-finetune_esm: false
-tie_lm_heads: true
-ckpt_path: null

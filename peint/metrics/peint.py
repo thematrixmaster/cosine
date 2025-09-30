@@ -56,10 +56,9 @@ class ZeroShotDMS(Metric):
             return {}
         all_ppls = np.array(all_ppls)
         all_fitness = np.array(all_fitness)
-        spearman_corr = pd.Series(all_ppls).corr(pd.Series(all_fitness), method="spearman")
+        # spearman_corr = pd.Series(all_ppls).corr(pd.Series(all_fitness), method="spearman")
         pearson_corr = pd.Series(all_ppls).corr(pd.Series(all_fitness), method="pearson")
-
-        return {"spearman": spearman_corr, "pearson": pearson_corr}
+        return {"pearson": pearson_corr}
 
     def aggregate(self, metrics):
         return metrics

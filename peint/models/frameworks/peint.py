@@ -92,6 +92,45 @@ def load_from_new_checkpoint(checkpoint_path: str, device: str = "cpu") -> PEINT
     return module.to(device).eval()
 
 
+def sampling_function(logits: torch.Tensor, p=0.9, argmax_sample=False):
+    """
+    Perform top p sampling on the given logits.
+
+    Args:
+    logits (torch.Tensor): Logits of shape [batch_size, vocab_size]
+    p (float): Nucleus sampling parameter, default is 0.9
+
+    Returns:
+    torch.Tensor: Sampled token indices of shape [batch_size, 1]
+    """
+
+    probs = nn.functional.softmax(logits, dim=-1)
+
+    if argmax_sample or p == 0.0:
+        return probs.argmax(-1, keepdim=True)
+
+    # If p == 1, perform standard sampling
+    if p >= 1.0:
+        return torch.multinomial(probs, 1)
+
+    sorted_probs, sorted_indices = torch.sort(probs, descending=True)
+    cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+    nucleus = cumulative_probs < p
+
+    # Create a mask for the nucleus
+    nucleus_mask = nucleus.clone()
+    nucleus_mask[:, 1:] = nucleus[:, :-1]
+    nucleus_mask[:, 0] = True
+    sorted_probs = sorted_probs.masked_fill(~nucleus_mask, 0)
+
+    # Redistribute the probabilities
+    sorted_probs /= sorted_probs.sum(dim=-1, keepdim=True)
+    sampled_indices = torch.multinomial(sorted_probs, 1)
+    next_tok = torch.gather(sorted_indices, 1, sampled_indices)
+
+    return next_tok
+
+
 def filter_sequences(
     decoded_sequences: List[str],
     length_criterion: Callable[[str], bool],
