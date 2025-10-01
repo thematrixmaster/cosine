@@ -16,6 +16,7 @@ class EncodedPEINTDataset(TorchWrapperDataset):
         leave_unmasked_prob: float = 0.1,
         sep_token: str = ".",
         embed_x_per_chain: bool = True,
+        permute_chain_order: bool = False,
         *args,
         **kwargs,
     ):
@@ -26,10 +27,23 @@ class EncodedPEINTDataset(TorchWrapperDataset):
         assert sep_token in self.vocab.tokens, f"{sep_token} not in vocab"
         self.sep_token = sep_token
         self.embed_x_per_chain = embed_x_per_chain
+        self.permute_chain_order = permute_chain_order
 
     def __getitem__(self, index: int):
-        xs, ys, ts = super().__getitem__(index)
+        xs, ys, ts, chain_ids = super().__getitem__(index)
 
+        # Optionally permute the order of chains
+        if self.permute_chain_order and len(xs) > 1:
+            perm = np.random.permutation(len(xs))
+            xs = [xs[i] for i in perm]
+            ys = [ys[i] for i in perm]
+            ts = [ts[i] for i in perm]
+            chain_ids = [chain_ids[i] for i in perm]
+
+        # convert chain id to tensor
+        chain_ids = torch.tensor(chain_ids, dtype=torch.long)
+
+        # x can be embedded either as separate chains or as one sequence with separator tokens
         if self.embed_x_per_chain:
             x_sizes = torch.tensor(
                 [len(x) + self.vocab.prepend_bos + self.vocab.append_eos for x in xs],
@@ -82,30 +96,36 @@ class EncodedPEINTDataset(TorchWrapperDataset):
         x_sizes = torch.nn.functional.pad(x_sizes, (0, len(x_src) - len(x_sizes)), value=0)
         y_sizes = torch.nn.functional.pad(y_sizes, (0, len(y_src) - len(y_sizes)), value=0)
 
-        return x_src, x_tgt, y_src, y_tgt, ts, x_sizes, y_sizes
+        return x_src, x_tgt, y_src, y_tgt, ts, chain_ids, x_sizes, y_sizes
 
     def collater(self, batch):
-        x_src, x_tgt, y_src, y_tgt, ts, x_sizes, y_sizes = zip(*batch)
+        x_src, x_tgt, y_src, y_tgt, ts, chain_ids, x_sizes, y_sizes = zip(*batch)
         return (
             collate_tensors(x_src, constant_value=self.vocab.pad_idx),
             collate_tensors(x_tgt, constant_value=self.vocab.pad_idx),
             collate_tensors(y_src, constant_value=self.vocab.pad_idx),
             collate_tensors(y_tgt, constant_value=self.vocab.pad_idx),
             collate_tensors(ts, constant_value=0.0),
-            collate_tensors(x_sizes, constant_value=0.0),
-            collate_tensors(y_sizes, constant_value=0.0),
+            collate_tensors(chain_ids, constant_value=0),
+            collate_tensors(x_sizes, constant_value=0),
+            collate_tensors(y_sizes, constant_value=0),
         )
 
 
 class EncodedDMSDataset(EncodedPEINTDataset):
     def __init__(self, t: float = 7.0, *args, **kwargs):
         super().__init__(
-            mask_prob=0.0, random_token_prob=0.0, leave_unmasked_prob=0.0, *args, **kwargs
+            mask_prob=0.0,
+            random_token_prob=0.0,
+            leave_unmasked_prob=0.0,
+            permute_chain_order=False,
+            *args,
+            **kwargs,
         )
         self.t = t
 
     def collater(self, batch):
-        x_src, _, y_src, y_tgt, mut_strs, x_sizes, y_sizes = zip(*batch)
+        x_src, _, y_src, y_tgt, mut_strs, chain_ids, x_sizes, y_sizes = zip(*batch)
         ts = [torch.full_like(xs, fill_value=self.t, dtype=torch.float32) for xs in x_sizes]
         return (
             collate_tensors(x_src, constant_value=self.vocab.pad_idx),
@@ -113,8 +133,9 @@ class EncodedDMSDataset(EncodedPEINTDataset):
             collate_tensors(y_tgt, constant_value=self.vocab.pad_idx),
             np.array(mut_strs, dtype=object),
             collate_tensors(ts, constant_value=0.0),
-            collate_tensors(x_sizes, constant_value=0.0),
-            collate_tensors(y_sizes, constant_value=0.0),
+            collate_tensors(chain_ids, constant_value=0),
+            collate_tensors(x_sizes, constant_value=0),
+            collate_tensors(y_sizes, constant_value=0),
         )
 
 
@@ -127,52 +148,62 @@ if __name__ == "__main__":
 
     vocab = Vocab.from_esm_alphabet(Alphabet.from_architecture("ESM-1b"))
 
-    data_file1 = "/accounts/projects/yss/stephen.lu/peint/data/wyatt/all/edges_joint_pipet/d1.txt"
-    data_file2 = "/accounts/projects/yss/stephen.lu/peint/data/wyatt/all/edges_joint_pipet/d2.txt"
-    data_file3 = "/accounts/projects/yss/stephen.lu/peint/data/wyatt/all/edges_joint_pipet/d3.txt"
-    data_file4 = "/accounts/projects/yss/stephen.lu/peint/data/wyatt/all/edges_joint_pipet/d4.txt"
+    data_file1 = "/accounts/projects/yss/stephen.lu/peint/data/dasm/edges/{}/v1jaffePairedCC.txt"
+    data_file2 = "/accounts/projects/yss/stephen.lu/peint/data/dasm/edges/{}/v1tangCC.txt"
+    data_file3 = (
+        "/accounts/projects/yss/stephen.lu/peint/data/dasm/edges/{}/v1vanwinkleheavyTrainCC.txt"
+    )
+    data_file4 = (
+        "/accounts/projects/yss/stephen.lu/peint/data/dasm/edges/{}/v1vanwinklelightTrainCC1m.txt"
+    )
     dms_file = "/accounts/projects/yss/stephen.lu/peint/data/wyatt/dms/mut_joint_pipet.txt"
 
-    datasets = []
-    for data_file in [data_file1, data_file2, data_file3]:
-        dataset = ComplexCherriesDataset(
-            data_file=data_file,
-            cache_indices=False,
-            min_t=5e-3,
+    datasets = {}
+
+    for mode in ["train", "val"]:
+        _datasets = []
+        for data_file in [data_file1, data_file2, data_file3]:
+            dataset = ComplexCherriesDataset(
+                data_file=data_file.format(mode),
+                min_t=0.0,
+                sep_token=".",
+                chain_id_offset=2 if data_file.endswith("v1vanwinklelightTrainCC1m.txt") else 1,
+            )
+            _datasets.append(dataset)
+
+        _dataset = ConcatDataset(_datasets)
+        dataset = EncodedPEINTDataset(
+            dataset=_dataset,
+            vocab=vocab,
             sep_token=".",
+            mask_prob=0.15,
+            random_token_prob=0.0,
+            leave_unmasked_prob=0.0,
+            embed_x_per_chain=True,
+            permute_chain_order=True,
         )
-        datasets.append(dataset)
+        datasets[mode] = dataset
 
-    _dataset = ConcatDataset(datasets)
-    dataset = EncodedPEINTDataset(
-        dataset=_dataset,
-        vocab=vocab,
-        sep_token=".",
-        mask_prob=0.15,
-        random_token_prob=0.0,
-        leave_unmasked_prob=0.0,
-        embed_x_per_chain=True,
-    )
-
-    dms_dataset = ComplexCherriesDataset(
-        data_file=dms_file,
-        cache_indices=False,
-        min_t=5e-3,
-        sep_token=".",
-    )
-    dms_dataset = EncodedDMSDataset(
-        dataset=dms_dataset,
-        vocab=vocab,
-        sep_token=".",
-        t=7.0,
-    )
+    # dms_dataset = ComplexCherriesDataset(
+    #     data_file=dms_file,
+    #     cache_indices=False,
+    #     min_t=5e-3,
+    #     sep_token=".",
+    # )
+    # dms_dataset = EncodedDMSDataset(
+    #     dataset=dms_dataset,
+    #     vocab=vocab,
+    #     sep_token=".",
+    #     t=7.0,
+    # )
 
     datamodule = PLMRDataModule(
-        dataset=dataset,
-        dataset_train=None,
-        dataset_val=[dms_dataset],
+        dataset=None,
+        dataset_train=datasets["train"],
+        dataset_val=[datasets["val"]],
+        # dataset_val=[dms_dataset],
         dataset_test=None,
-        batch_size=32,
+        batch_size=16,
         num_workers=8,
         train_val_split=[0.95, 0.05],
         generator_seed=42,
@@ -190,21 +221,21 @@ if __name__ == "__main__":
     print(f"Validation dataset size: {len(datamodule.data_val[0])}")
 
     for batch in tqdm(iter(tr_dataloader)):
-        x_src, x_tgt, y_src, y_tgt, ts, x_sizes, y_sizes = batch
+        x_src, x_tgt, y_src, y_tgt, ts, chain_ids, x_sizes, y_sizes = batch
         print(batch)
         # breakpoint()
         break
 
     for batch in tqdm(iter(val_dataloaders[0])):
-        x_src, x_tgt, y_src, y_tgt, ts, x_sizes, y_sizes = batch
+        x_src, x_tgt, y_src, y_tgt, ts, chain_ids, x_sizes, y_sizes = batch
         print(batch)
         # breakpoint()
         break
 
-    for batch in tqdm(iter(val_dataloaders[1])):
-        x_src, y_src, y_tgt, mut_code, ts, x_sizes, y_sizes = batch
-        print(batch)
-        # breakpoint()
-        break
+    # for batch in tqdm(iter(val_dataloaders[1])):
+    #     x_src, y_src, y_tgt, mut_code, ts, chain_ids, x_sizes, y_sizes = batch
+    #     print(batch)
+    #     breakpoint()
+    #     break
 
     # breakpoint()

@@ -7,20 +7,17 @@ dataset:
       data_file: ${paths.data_dir}/wyatt/all/edges_joint/d1.txt
       sep_token: .
       min_t: 5e-3
-      quantize_t: false
-      cache_indices: false
+      chain_id_offset: 1
     - _target_: evo.dataset.ComplexCherriesDataset
       data_file: ${paths.data_dir}/wyatt/all/edges_joint/d2.txt
       sep_token: .
       min_t: 5e-3
-      quantize_t: false
-      cache_indices: false
+      chain_id_offset: 1
     - _target_: evo.dataset.ComplexCherriesDataset
       data_file: ${paths.data_dir}/wyatt/all/edges_joint/d3.txt
       sep_token: .
       min_t: 5e-3
-      quantize_t: false
-      cache_indices: false
+      chain_id_offset: 1
 
 sep_token: .
 vocab: ${vocab}

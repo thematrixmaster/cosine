@@ -544,7 +544,6 @@ class FlashMHAEncoderBlock(nn.Module):
         self.layer_idx = layer_idx
         self.attention_heads = attention_heads
 
-        # initialized submodules
         self.self_attn = RopeFlashMHA(
             embed_dim=embed_dim,
             num_heads=attention_heads,
@@ -570,7 +569,6 @@ class FlashMHAEncoderBlock(nn.Module):
         residual = x
         x = self.self_attn_layer_norm(x)
         x = self.self_attn(x, x_attn_mask=x_attn_mask)
-
         x = residual + x
 
         residual = x
@@ -595,10 +593,12 @@ class FlashMHADecoderBlock(nn.Module):
         add_bias_kv=False,
         dropout_p=0.0,
         layer_idx=None,
+        causal=True,
         **kwargs,
     ):
         super().__init__()
 
+        self.causal = causal
         self.embed_dim = embed_dim
         self.use_bias = use_bias
         self.ffn_embed_dim = ffn_embed_dim
@@ -610,23 +610,29 @@ class FlashMHADecoderBlock(nn.Module):
         self.self_attn = RopeFlashMHA(
             embed_dim=embed_dim,
             num_heads=attention_heads,
-            self_attn=True,
-            causal=True,
-            layer_idx=layer_idx,
+            bias=use_bias,
+            add_bias_kv=add_bias_kv,
             dropout=dropout_p,
+            self_attn=True,
+            causal=causal,
+            layer_idx=layer_idx,
         )
         self.cross_attn = RopeFlashMHA(
             embed_dim=embed_dim,
             num_heads=attention_heads,
-            self_attn=False,
+            bias=use_bias,
+            add_bias_kv=add_bias_kv,
+            dropout=dropout_p,
+            self_attn=True,
             causal=False,
             layer_idx=layer_idx,
-            dropout=dropout_p,
         )
+
+        # layer norms
         self.self_attn_layer_norm = nn.LayerNorm(embed_dim)
         self.cross_attn_layer_norm = nn.LayerNorm(embed_dim)
         self.final_layer_norm = nn.LayerNorm(embed_dim)
-
+        # ffn layers
         self.fc1 = nn.Linear(embed_dim, ffn_embed_dim)
         self.fc2 = nn.Linear(ffn_embed_dim, embed_dim)
 
@@ -641,11 +647,11 @@ class FlashMHADecoderBlock(nn.Module):
         the decoder, x is y and y is x (i.e. y provides the q, while k,v come from x).
         This is handled in the overall transformer forward pass (reassigning x to y and the padding masks accordingly).
         """
-        # causal self-attention
+        # self-attention (causal or bidirectional)
         residual = x
         x = self.self_attn_layer_norm(x)
         x = self.self_attn(x=x, x_attn_mask=x_attn_mask)
-        x = x + residual
+        x = residual + x
 
         # cross attention
         residual = x
@@ -657,7 +663,7 @@ class FlashMHADecoderBlock(nn.Module):
         x = self.final_layer_norm(x)
         x = gelu(self.fc1(x))
         x = self.fc2(x)
-        x = x + residual
+        x = residual + x
 
         return x
 

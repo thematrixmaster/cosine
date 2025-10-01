@@ -6,7 +6,7 @@ default_language_version:
 repos:
   # Generally useful pre-commit hooks
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.3.0 # Use the ref you want to point at
+    rev: v6.0.0 # Use the ref you want to point at
     hooks:
       - id: check-added-large-files
         args: [--maxkb=1000]
@@ -26,7 +26,7 @@ repos:
 
   # latest version of black when this pre-commit config is being set up
   - repo: https://github.com/psf/black
-    rev: 23.3.0
+    rev: 25.9.0
     hooks:
       - id: black
         name: "black"
@@ -46,7 +46,7 @@ repos:
         files: \.py$
 
   - repo: https://github.com/pycqa/isort
-    rev: 5.12.0
+    rev: 6.0.1
     hooks:
       - id: isort
         name: "isort"
