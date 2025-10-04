@@ -256,7 +256,9 @@ class PEINT(nn.Module):
         )
 
         # time embedding
-        self.time_embedding = GeometricTimeEmbedder(frequency_embedding_size=embed_dim)
+        self.time_embedding = GeometricTimeEmbedder(
+            frequency_embedding_size=embed_dim, start=1e-5, stop=0.25
+        )
 
         # chain embedding (0 is padding idx)
         self.chain_embedding = (

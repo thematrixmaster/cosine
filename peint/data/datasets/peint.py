@@ -15,8 +15,9 @@ class EncodedPEINTDataset(TorchWrapperDataset):
         random_token_prob: float = 0.1,
         leave_unmasked_prob: float = 0.1,
         sep_token: str = ".",
-        embed_x_per_chain: bool = True,
+        embed_x_per_chain: bool = False,
         permute_chain_order: bool = False,
+        permute_method: str | None = "random",  # "random" or "reverse"
         *args,
         **kwargs,
     ):
@@ -28,13 +29,22 @@ class EncodedPEINTDataset(TorchWrapperDataset):
         self.sep_token = sep_token
         self.embed_x_per_chain = embed_x_per_chain
         self.permute_chain_order = permute_chain_order
+        self.permute_method = permute_method
+        assert permute_method in [
+            "random",
+            "reverse",
+            None,
+        ], f"Invalid permute_method: {permute_method}"
 
     def __getitem__(self, index: int):
         xs, ys, ts, chain_ids = super().__getitem__(index)
 
-        # Optionally permute the order of chains
+        # Optionally permute the order of chains with some probability
         if self.permute_chain_order and len(xs) > 1:
-            perm = np.random.permutation(len(xs))
+            if self.permute_method == "reverse":
+                perm = list(reversed(range(len(xs))))
+            else:
+                perm = np.random.permutation(len(xs))
             xs = [xs[i] for i in perm]
             ys = [ys[i] for i in perm]
             ts = [ts[i] for i in perm]
@@ -208,6 +218,7 @@ if __name__ == "__main__":
         train_val_split=[0.95, 0.05],
         generator_seed=42,
         pin_memory=False,
+        shuffle=True,
     )
     datamodule.setup(stage="fit")
 

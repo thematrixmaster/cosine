@@ -65,18 +65,22 @@ net:
   num_encoder_layers: 3
   num_decoder_layers: 3
   chain_break_token: .
+  use_chain_embedding: false
+  causal_decoder: true
   enc_model:
     finetune: false
     embed_x_per_chain: false
     ckpt_path: null
 
 data:
+  shuffle: true
   num_workers: 0
   batch_size: 16
   train_val_split: [0.95, 0.05]
   dataset:
     sep_token: ${net.chain_break_token}
     embed_x_per_chain: ${net.enc_model.embed_x_per_chain}
+    permute_chain_order: false
   dataset_val:
     sep_token: ${net.chain_break_token}
     embed_x_per_chain: ${net.enc_model.embed_x_per_chain}

@@ -610,8 +610,8 @@ class FlashMHADecoderBlock(nn.Module):
         self.self_attn = RopeFlashMHA(
             embed_dim=embed_dim,
             num_heads=attention_heads,
-            bias=use_bias,
-            add_bias_kv=add_bias_kv,
+            # bias=use_bias,
+            # add_bias_kv=add_bias_kv,
             dropout=dropout_p,
             self_attn=True,
             causal=causal,
@@ -620,10 +620,10 @@ class FlashMHADecoderBlock(nn.Module):
         self.cross_attn = RopeFlashMHA(
             embed_dim=embed_dim,
             num_heads=attention_heads,
-            bias=use_bias,
-            add_bias_kv=add_bias_kv,
+            # bias=use_bias,
+            # add_bias_kv=add_bias_kv,
             dropout=dropout_p,
-            self_attn=True,
+            self_attn=False,
             causal=False,
             layer_idx=layer_idx,
         )

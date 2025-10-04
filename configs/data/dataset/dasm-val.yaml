@@ -30,4 +30,4 @@ mask_prob: 0.15
 random_token_prob: 0.0
 leave_unmasked_prob: 0.0
 embed_x_per_chain: true
-permute_chain_order: true
+permute_chain_order: false
