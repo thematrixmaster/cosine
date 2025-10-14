@@ -5,7 +5,7 @@
 
 defaults:
   - override /data: plmr
-  - override /data/dataset: peint
+  - override /data/dataset: pipet
   - override /data/dataset@data.dataset_val: dms
   - override /vocab: esm
   - override /callbacks: default
@@ -39,7 +39,7 @@ callbacks:
   model_checkpoint:
     monitor: val/loss/dataloader_idx_0
     mode: min
-    every_n_train_steps: 4000
+    every_n_train_steps: 5000
   lr_monitor:
     logging_interval: step
   early_stopping:
@@ -61,15 +61,27 @@ model:
 
 net:
   dropout_p: 0.0
-  use_attention_bias: true
-  finetune_esm: false
   num_heads: 20
   num_encoder_layers: 3
   num_decoder_layers: 3
-  ckpt_path: null
+  chain_break_token: .
+  enc_model:
+    finetune: false
+    embed_x_per_chain: false
+    ckpt_path: null
 
 data:
+  num_workers: 0
   batch_size: 16
+  train_val_split: [0.95, 0.05]
+  dataset:
+    sep_token: ${net.chain_break_token}
+    embed_x_per_chain: ${net.enc_model.embed_x_per_chain}
+  dataset_val:
+    sep_token: ${net.chain_break_token}
+    embed_x_per_chain: ${net.enc_model.embed_x_per_chain}
+    dataset:
+      data_file: ${paths.data_dir}/wyatt/dms/mut_joint_pipet.txt
 
 logger:
   wandb:

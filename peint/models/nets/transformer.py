@@ -1265,7 +1265,6 @@ class ESMEncoderBlock(nn.Module):
         x = self.fc2(x)
         x = x + residual
 
-        # return x, att
         return x
 
 
@@ -2201,7 +2200,7 @@ class MultiSequenceEncoderBlock(nn.Module):
         ffn_embed_dim: int,
         dropout_p: float,
         layer_idx: Optional[int] = None,
-        self_attn_type: str = "intra_inter",  # Default to intra_inter
+        self_attn_type: str = "full",  # Default to full
         **kwargs,
     ):
         super().__init__()
@@ -2267,7 +2266,7 @@ class MultiSequenceEncoderBlock(nn.Module):
             [0, 1, 2, 0, 1, 2, 3, 4, 0, 0]]
         NB: the final 0s don't matter because they go beyond the sequence length and will be ignored by the unpad.
         """
-
+        # atten block
         residual = x
         x = self.self_attn_layer_norm(x)
         if isinstance(self.self_attn, DecoupledIntraInterMultiSequenceSelfAttention):
@@ -2276,7 +2275,7 @@ class MultiSequenceEncoderBlock(nn.Module):
         else:
             x = self.self_attn(x, attn_mask)
         x = x + residual
-
+        # MLP block
         residual = x
         x = self.final_layer_norm(x)
         x = gelu(self.fc1(x))
@@ -2294,7 +2293,7 @@ class MultiSequenceDecoderBlock(nn.Module):
         ffn_embed_dim: int,
         dropout_p: float,
         layer_idx: Optional[int] = None,
-        self_attn_type: str = "full",  # for ablation
+        self_attn_type: str = "full",
         **kwargs,
     ):
         super().__init__()
@@ -2344,6 +2343,7 @@ class MultiSequenceDecoderBlock(nn.Module):
         self.self_attn_layer_norm = nn.LayerNorm(embed_dim)
         self.cross_attn_layer_norm = nn.LayerNorm(embed_dim)
         self.final_layer_norm = nn.LayerNorm(embed_dim)
+
         self.fc1 = nn.Linear(embed_dim, ffn_embed_dim)
         self.fc2 = nn.Linear(ffn_embed_dim, embed_dim)
 

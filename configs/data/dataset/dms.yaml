@@ -1,11 +1,14 @@
 _target_: peint.data.datasets.peint.EncodedDMSDataset
 
 dataset:
-  _target_: evo.dataset.CherriesDataset
+  _target_: evo.dataset.ComplexCherriesDataset
   data_file: ${paths.data_dir}/wyatt/dms/mut_joint.txt
-  cache_indices: false
+  sep_token: .
   min_t: 5e-3
   quantize_t: false
+  cache_indices: false
 
 t: 7.0
+sep_token: .
 vocab: ${vocab}
+embed_x_per_chain: false

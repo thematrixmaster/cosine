@@ -5,6 +5,7 @@
 /oas/**
 /uniref/**
 /flab/*
+/dasm/*
 *.txt
 *.csv
 *.csv.gz
@@ -15,3 +16,4 @@ link.sh
 sets
 sets_cached
 uniref50
+dasm

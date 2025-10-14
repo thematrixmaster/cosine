@@ -1,14 +1,16 @@
 import torch
 
 
-def _expand_distances_to_seqlen(distances_in_length, attn_mask_in_length) -> torch.Tensor:
+def _expand_distances_to_seqlen(
+    distances_in_length: torch.Tensor, attn_mask_in_length: torch.Tensor
+) -> torch.Tensor:
     """
     Expand the per sequence distance to a positional encoding tensor
     using the length of each sequence in the batch
     If distances_in_length and attn_mask_in_length have different length
     the output will be the length of attn_mask_in_length
     """
-    pos = torch.zeros_like(distances_in_length)
+    pos = torch.zeros_like(attn_mask_in_length, dtype=distances_in_length.dtype)
     B, _ = distances_in_length.size()
     for i in range(B):
         lengths = attn_mask_in_length[
