@@ -264,3 +264,9 @@ uv run python experiments/train_model.py trainer=ddp trainer.devices=4
 - **Configuration errors**: Use `--cfg job` to validate configs before training
 - **Memory issues**: Reduce batch size in data configuration
 - **Slow training**: Consider using multiple GPUs or gradient accumulation
+
+
+## IMPORTANT INSTRUCTIONS
+
+- only make minimal code edits required
+-
