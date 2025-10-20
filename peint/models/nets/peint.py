@@ -17,7 +17,7 @@ from peint.models.nets.transformer import (
 from peint.models.nets.utils import (
     _create_padding_mask,
     _create_sequence_mask,
-    _expand_distances_to_seqlen,
+    _expand_chain_attr_to_seqlen,
 )
 
 
@@ -106,19 +106,14 @@ class ESMEncoder(PretrainedEncoder):
         Compute ESM embedding separately for each sequence in the batch (multi-sequence style)
         """
         bsz, seq_len = x.shape
-        num_sequences = (x_sizes > 0).sum(dim=1)
+        _num_sequences = (x_sizes > 0).sum(dim=1)
+        max_num_sequences = _num_sequences.max().item()
 
-        # Assert that all batch elements have the same number of sequences
-        assert torch.all(
-            num_sequences == num_sequences[0]
-        ), "All batch elements must have the same number of sequences"
-
-        num_sequences = num_sequences[0].item()
         combined_embedding = torch.zeros(
             (bsz, seq_len, (self.embed_dim())), dtype=torch.float, device=x.device
         )
 
-        for seq_idx in range(num_sequences):
+        for seq_idx in range(max_num_sequences):
             # Shape (B, L), True for the residues of `seq_idx`th sequence of each batch element
             seq_mask = _create_sequence_mask(x_sizes, sequence_idx=seq_idx)
             # Create a copy of the input to avoid modifying the original
@@ -137,6 +132,9 @@ class ESMEncoder(PretrainedEncoder):
             with torch.no_grad():
                 output = self.esm(x_seq, repr_layers=[self.esm.num_layers])
                 embedding = output["representations"][self.esm.num_layers]
+
+            # Replace nans with zeros (can happen for sequences with less chains)
+            embedding = torch.nan_to_num(embedding, nan=0.0)
 
             # Add the current sequence embedding to the combined embedding
             combined_embedding += embedding * seq_mask.unsqueeze(-1)
@@ -186,9 +184,9 @@ class PEINT(nn.Module):
     - Unified size-based mask interface
 
     Args:
-        embed_x_per_chain: If True, process ESM per chain separately (multi-sequence style).
-                          If False, process concatenated sequences (single-sequence style).
         chain_break_token: Token used to separate sequences (for multi-sequence inputs)
+        causal_decoder: If True, use causal attention in the decoder (for autoregressive).
+                        If False, use bidirectional attention (for masked prediction / discrete diffusion).
     """
 
     def __init__(
@@ -197,12 +195,15 @@ class PEINT(nn.Module):
         evo_vocab: Vocab,
         embed_dim: int,
         num_heads: int,
+        num_chains: int,
         num_encoder_layers: int,
         num_decoder_layers: int,
         max_len=1022,
         dropout_p: float = 0.0,
+        use_chain_embedding: bool = True,
         use_attention_bias: bool = True,
         chain_break_token: str = ".",
+        causal_decoder: bool = True,
     ):
         super(PEINT, self).__init__()
 
@@ -248,20 +249,34 @@ class PEINT(nn.Module):
                     dropout_p=self.dropout_p,
                     use_bias=self.use_bias,
                     layer_idx=l,
+                    causal=causal_decoder,
                 )
                 for l in range(num_decoder_layers)
             ]
         )
 
         # time embedding
-        self.time_embedding = GeometricTimeEmbedder(frequency_embedding_size=embed_dim)
+        self.time_embedding = GeometricTimeEmbedder(
+            frequency_embedding_size=embed_dim, start=1e-5, stop=0.25
+        )
+
+        # chain embedding (0 is padding idx)
+        self.chain_embedding = (
+            nn.Embedding(num_chains + 1, embed_dim, padding_idx=0) if use_chain_embedding else None
+        )
 
         # get input and output layers from the encoder
         self.in_embedding = self.enc_model.get_in_embedding()
         self.out_lm_head = self.enc_model.get_out_lm_head()
 
     def forward(
-        self, x: Tensor, y: Tensor, t: Tensor, x_sizes: Tensor, y_sizes: Tensor
+        self,
+        x: Tensor,
+        y: Tensor,
+        t: Tensor,
+        x_sizes: Tensor,
+        y_sizes: Tensor,
+        chain_ids: Tensor = None,
     ) -> Dict[str, Tensor]:
         """
         Unified forward pass using standardized size-based interface.
@@ -272,6 +287,7 @@ class PEINT(nn.Module):
             t: Time values (batch_size, num_chains)
             x_sizes: Sequence sizes for encoder (batch_size, seq_len)
             y_sizes: Sequence sizes for decoder (batch_size, seq_len)
+            chain_ids: Chain IDs for each sequence in the batch (batch_size, num_chains)
 
         Returns:
             Dict with 'enc_logits' and 'dec_logits' keys
@@ -280,8 +296,8 @@ class PEINT(nn.Module):
         h_y = self.in_embedding(y)
 
         # Position-specific time embedding using distances
-        distances_expanded = _expand_distances_to_seqlen(
-            distances_in_length=t, attn_mask_in_length=y_sizes
+        distances_expanded = _expand_chain_attr_to_seqlen(
+            chain_attr=t, sizes=y_sizes, pad_value=0.0
         )
         ht = self.time_embedding(distances_expanded)
         h_y = h_y + ht
@@ -292,6 +308,17 @@ class PEINT(nn.Module):
 
         # Get pretrained encoder representations
         h_x = self.enc_model.forward(x=x, x_sizes=x_sizes)
+
+        # Add chain embeddings to both h_x and h_y if available
+        if self.chain_embedding is not None and chain_ids is not None:
+            chain_attr_expanded_x = _expand_chain_attr_to_seqlen(
+                chain_attr=chain_ids, sizes=x_sizes, pad_value=0
+            )
+            chain_attr_expanded_y = _expand_chain_attr_to_seqlen(
+                chain_attr=chain_ids, sizes=y_sizes, pad_value=0
+            )
+            h_x = h_x + self.chain_embedding(chain_attr_expanded_x.long())
+            h_y = h_y + self.chain_embedding(chain_attr_expanded_y.long())
 
         # Encoder-decoder forward pass
         for i, enc_layer in enumerate(self.enc_layers):

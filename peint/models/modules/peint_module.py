@@ -48,12 +48,11 @@ class PEINTModule(PLMRLitModule):
         return self.net(*args, **kwargs)
 
     def model_step(self, batch):
-        """Simplified model step using unified network interface"""
-        # New unified format: [x_src, x_tgt, y_src, y_tgt, ts, x_sizes, y_sizes]
-        x_src, x_tgt, y_src, y_tgt, ts, x_sizes, y_sizes = batch
+        # New unified format: [x_src, x_tgt, y_src, y_tgt, ts, chain_ids, x_sizes, y_sizes]
+        x_src, x_tgt, y_src, y_tgt, ts, chain_ids, x_sizes, y_sizes = batch
 
         # Use unified network interface with size-based masks
-        outputs = self.net(x_src, y_src, ts, x_sizes=x_sizes, y_sizes=y_sizes)
+        outputs = self.net(x_src, y_src, ts, x_sizes=x_sizes, y_sizes=y_sizes, chain_ids=chain_ids)
 
         # Handle outputs from network
         x_logits, y_logits = outputs["enc_logits"], outputs["dec_logits"]
@@ -83,19 +82,21 @@ class PEINTModule(PLMRLitModule):
         super().on_validation_epoch_start()
         self.validation_step_outputs = [[] for _ in self.trainer.val_dataloaders]
 
-    def validation_step(self, batch, batch_idx: int, dataloader_idx: int):
+    def validation_step(self, batch, batch_idx: int, dataloader_idx: int = 0):
         """Simplified validation step using unified network interface"""
         # Handle different data formats
         if dataloader_idx == 0:
-            # Standard training format: [x_src, x_tgt, y_src, y_tgt, ts, x_sizes, y_sizes]
-            x_src, x_tgt, y_src, y_tgt, ts, x_sizes, y_sizes = batch
+            # Standard training format has x_tgt
+            x_src, x_tgt, y_src, y_tgt, ts, chain_ids, x_sizes, y_sizes = batch
         else:
-            # DMS format: [x_src, y_src, y_tgt, muts, ts, x_sizes, y_sizes]
-            x_src, y_src, y_tgt, muts, ts, x_sizes, y_sizes = batch
+            # DMS format only cares about decoder prediction
+            x_src, y_src, y_tgt, muts, ts, chain_ids, x_sizes, y_sizes = batch
             x_tgt = None
 
         with torch.no_grad():
-            outputs = self.net(x_src, y_src, ts, x_sizes=x_sizes, y_sizes=y_sizes)
+            outputs = self.net(
+                x_src, y_src, ts, x_sizes=x_sizes, y_sizes=y_sizes, chain_ids=chain_ids
+            )
 
         # Handle outputs from network
         x_logits, y_logits = outputs["enc_logits"], outputs["dec_logits"]

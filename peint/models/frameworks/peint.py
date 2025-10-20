@@ -12,7 +12,7 @@ from ete3 import Tree
 from evo.sequence import _FASTA_VOCAB
 from evo.tokenization import Vocab
 from peint.models.modules.peint_module import PEINTModule
-from peint.models.nets.peint import PEINT
+from peint.models.nets.peint import PEINT, ESMEncoder
 
 
 def load_from_old_checkpoint(checkpoint_path: str, device: str = "cpu") -> PEINTModule:
@@ -25,7 +25,17 @@ def load_from_old_checkpoint(checkpoint_path: str, device: str = "cpu") -> PEINT
     checkpoint = torch.load(checkpoint_path, map_location=device)
     hyperparams = checkpoint.get("hyper_parameters", {})
 
-    peint = PEINT.from_pretrained_esm2(
+    enc_model = ESMEncoder.from_pretrained(
+        dropout_p=hyperparams.get("dropout_p", 0.0),
+        finetune=False,
+        embed_x_per_chain=False,
+    )
+    peint = PEINT(
+        enc_model=enc_model,
+        evo_vocab=enc_model.vocab,
+        num_chains=1,
+        causal_decoder=True,
+        use_chain_embedding=False,
         num_heads=hyperparams["num_heads"],
         embed_dim=hyperparams["embed_dim"],
         max_len=hyperparams["max_seq_len"],

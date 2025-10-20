@@ -1,0 +1,94 @@
+# @package _global_
+
+# to execute this experiment run:
+# python train.py experiment=example
+
+defaults:
+  - override /data: plmr
+  - override /data/dataset: none
+  - override /data/dataset@data.dataset_train: dasm-tr
+  - override /data/dataset@data.dataset_val: dasm-val
+  - override /vocab: esm
+  - override /callbacks: default
+  - override /callbacks: grad_norm
+  - override /callbacks: val_likelihood
+  - override /metrics: none
+  - override /model: peint
+  - override /net: peint
+  - override /trainer: gpu
+  - override /logger: csv
+
+# all parameters below will be merged with parameters from default configurations set above
+# this allows you to overwrite only specified parameters
+
+tags: ["plmr", "peint", "dasm"]
+
+seed: 12345
+
+trainer:
+  # min_epochs: 100
+  max_epochs: null
+  max_steps: 1000000
+  val_check_interval: 20000
+  accumulate_grad_batches: 3
+  check_val_every_n_epoch: null
+  gradient_clip_val: 1.0
+  log_every_n_steps: 1
+  precision: bf16
+
+callbacks:
+  model_checkpoint:
+    monitor: val/loss
+    mode: min
+    every_n_train_steps: 20000
+  lr_monitor:
+    logging_interval: step
+  early_stopping:
+    monitor: val/loss
+    mode: min
+    patience: 50
+
+vocab:
+  alphabet:
+    name: ESM-1b
+
+model:
+  compile: false
+  weight_decay: 0.01
+  optimizer:
+    lr: 0.0001
+  scheduler:
+    num_warmup_steps: 2000
+
+net:
+  dropout_p: 0.1
+  num_heads: 20
+  num_encoder_layers: 3
+  num_decoder_layers: 3
+  chain_break_token: .
+  use_chain_embedding: true
+  causal_decoder: true
+  enc_model:
+    finetune: false
+    embed_x_per_chain: true
+    ckpt_path: null
+
+data:
+  shuffle: true
+  num_workers: 0
+  batch_size: 32
+  train_val_split: [0.95, 0.05]
+  dataset_train:
+    sep_token: ${net.chain_break_token}
+    embed_x_per_chain: ${net.enc_model.embed_x_per_chain}
+    permute_chain_order: true
+  dataset_val:
+    sep_token: ${net.chain_break_token}
+    embed_x_per_chain: ${net.enc_model.embed_x_per_chain}
+    permute_chain_order: false
+
+logger:
+  wandb:
+    tags: ${tags}
+
+ckpt_path: null

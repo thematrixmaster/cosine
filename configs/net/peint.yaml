@@ -8,6 +8,7 @@ enc_model:
   embed_x_per_chain: false
   ckpt_path: null
 
+num_chains: 2
 num_heads: 20
 embed_dim: 640
 max_len: 1022
@@ -16,4 +17,6 @@ num_decoder_layers: 3
 
 dropout_p: 0.0
 chain_break_token: .
+use_chain_embedding: true
 use_attention_bias: true
+causal_decoder: true
