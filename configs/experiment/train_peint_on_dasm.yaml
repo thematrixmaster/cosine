@@ -65,7 +65,6 @@ net:
   num_heads: 20
   num_encoder_layers: 3
   num_decoder_layers: 3
-  chain_break_token: .
   use_chain_embedding: true
   causal_decoder: true
   enc_model:
@@ -79,11 +78,11 @@ data:
   batch_size: 32
   train_val_split: [0.95, 0.05]
   dataset_train:
-    sep_token: ${net.chain_break_token}
+    sep_token: .
     embed_x_per_chain: ${net.enc_model.embed_x_per_chain}
     permute_chain_order: true
   dataset_val:
-    sep_token: ${net.chain_break_token}
+    sep_token: .
     embed_x_per_chain: ${net.enc_model.embed_x_per_chain}
     permute_chain_order: false
 

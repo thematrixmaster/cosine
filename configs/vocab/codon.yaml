@@ -1,0 +1,1 @@
+_target_: evo.tokenization.CodonVocab.from_codons

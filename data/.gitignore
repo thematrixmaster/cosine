@@ -6,6 +6,7 @@
 /uniref/**
 /flab/*
 /dasm/*
+/tr_rosetta/*
 *.txt
 *.csv
 *.csv.gz
@@ -17,3 +18,7 @@ sets
 sets_cached
 uniref50
 dasm
+wyatt
+oas
+flab
+tr_rosetta

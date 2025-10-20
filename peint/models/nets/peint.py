@@ -7,7 +7,7 @@ from esm.model.esm2 import ESM2
 from esm.modules import RobertaLMHead
 from torch import Tensor
 
-from evo.tokenization import Vocab
+from evo.tokenization import CodonVocab, Vocab
 from peint.models.nets.esm2 import ESM2Flash
 from peint.models.nets.transformer import (
     FlashMHADecoderBlock,
@@ -35,7 +35,7 @@ class PretrainedEncoder(ABC, nn.Module):
         pass
 
     @abstractmethod
-    def get_in_embedding(self) -> nn.Embedding:
+    def get_in_embedding(self) -> nn.Module:
         pass
 
     @abstractmethod
@@ -110,7 +110,7 @@ class ESMEncoder(PretrainedEncoder):
         max_num_sequences = _num_sequences.max().item()
 
         combined_embedding = torch.zeros(
-            (bsz, seq_len, (self.embed_dim())), dtype=torch.float, device=x.device
+            (bsz, seq_len, (self.esm.embed_dim)), dtype=torch.float, device=x.device
         )
 
         for seq_idx in range(max_num_sequences):
@@ -168,6 +168,77 @@ class ESMEncoder(PretrainedEncoder):
         return cls(esm_model=esm_model, vocab=evo_vocab, *args, **kwargs)
 
 
+class ESMCodonEncoder(ESMEncoder):
+    """Encoder that concatenates learned codon embeddings with frozen ESM amino acid embeddings."""
+
+    vocab: CodonVocab
+
+    def __init__(
+        self,
+        vocab: Vocab,
+        codon_vocab: CodonVocab,
+        codon_embed_dim: int,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(vocab=codon_vocab, *args, **kwargs)
+        self.aa_vocab = vocab
+        self.codon_embed_dim = codon_embed_dim
+        self.codon_to_aa_mapping = codon_vocab.translation_tensor_map(aa_vocab=vocab).cuda()
+        print(self.codon_to_aa_mapping.device)
+        self.codon_embedding = nn.Embedding(len(self.vocab), self.codon_embed_dim)
+        nn.init.normal_(self.codon_embedding.weight, mean=0.0, std=0.02)
+        self.codon_embedding.requires_grad_(True)
+
+    def embed_dim(self) -> int:
+        return self.esm.embed_dim + self.codon_embed_dim
+
+    def get_in_embedding(self) -> nn.Embedding:
+        """Hybrid embedding layer that concatenates codon and amino acid embeddings."""
+
+        class HybridEmbedding(nn.Module):
+            def __init__(module_self):
+                super().__init__()
+                module_self.aa_embedding = nn.Embedding(len(self.aa_vocab), self.esm.embed_dim)
+                module_self.aa_embedding.load_state_dict(self.esm.embed_tokens.state_dict())
+                module_self.aa_embedding.requires_grad_(self.finetune)
+
+            def forward(module_self, x: Tensor) -> Tensor:
+                aa_tok_idx = self.codon_to_aa_mapping[x]  # (B, L)
+                aa_emb = module_self.aa_embedding(aa_tok_idx)  # (B, L, esm_embed_dim)
+                codon_emb = self.codon_embedding(x)  # (B, L, codon_embed_dim)
+                return torch.cat([codon_emb, aa_emb], dim=-1)  # (B, L, codon+esm_embed_dim)
+
+        return HybridEmbedding()
+
+    def get_out_lm_head(self) -> nn.Module:
+        # output layer trained from scratch
+        # create learnable weight for the lm head
+        weight = torch.randn(len(self.vocab), self.embed_dim()) * 0.02
+        lm_head_weight = nn.Parameter(weight, requires_grad=True)
+        lm_head = RobertaLMHead(
+            embed_dim=self.embed_dim(),
+            output_dim=len(self.vocab),
+            weight=lm_head_weight,
+        )
+        lm_head.requires_grad_(True)  # always finetune the output layer
+        return lm_head
+
+    def forward(self, x: Tensor, x_sizes: Tensor) -> Tensor:
+        aa_tok_idx = self.codon_to_aa_mapping[x]  # (B, L)
+        if self.embed_x_per_chain:
+            # Multi-sequence processing: compute ESM per chain
+            aa_hx = self.forward_per_chain(aa_tok_idx, x_sizes)
+        else:
+            # Single-sequence processing: process concatenated sequence
+            res = self.esm(aa_tok_idx, repr_layers=[self.esm.num_layers], need_head_weights=False)
+            aa_hx = res["representations"][self.esm.num_layers]
+
+        codon_emb = self.codon_embedding(x)  # (B, L, codon_embed_dim)
+        joint_hx = torch.cat([codon_emb, aa_hx], dim=-1)  # (B, L, codon+esm_embed_dim)
+        return joint_hx
+
+
 class PEINT(nn.Module):
     """Unified encoder-decoder transformer for protein evolution modeling.
 
@@ -184,7 +255,6 @@ class PEINT(nn.Module):
     - Unified size-based mask interface
 
     Args:
-        chain_break_token: Token used to separate sequences (for multi-sequence inputs)
         causal_decoder: If True, use causal attention in the decoder (for autoregressive).
                         If False, use bidirectional attention (for masked prediction / discrete diffusion).
     """
@@ -202,7 +272,6 @@ class PEINT(nn.Module):
         dropout_p: float = 0.0,
         use_chain_embedding: bool = True,
         use_attention_bias: bool = True,
-        chain_break_token: str = ".",
         causal_decoder: bool = True,
     ):
         super(PEINT, self).__init__()
@@ -214,7 +283,6 @@ class PEINT(nn.Module):
         self.num_heads = num_heads
         self.dropout_p = dropout_p
         self.use_bias = use_attention_bias
-        self.chain_break_token = chain_break_token
         self.num_encoder_layers = num_encoder_layers
         self.num_decoder_layers = num_decoder_layers
 
