@@ -136,10 +136,10 @@ class PEINTModule(PLMRLitModule):
         clm_loss_mean = clm_loss[padding_mask].mean()
         clm_ppl = torch.exp(clm_loss_mean)
 
-        # get ppl per time bin
+        # get lls per time bin
         tbins = ts[:, :1].expand_as(y_tgt)[padding_mask]
         mask_loss = -1 * clm_loss[padding_mask]
-        ppl_per_bin = {b.item(): mask_loss[tbins == b].cpu().numpy() for b in ts[:, :1]}
+        ll_per_bin = {b.item(): mask_loss[tbins == b].cpu().numpy() for b in ts[:, :1]}
 
         if "mlm_loss" in loss_info:
             loss = loss_info["mlm_loss"] + clm_loss_mean
@@ -162,7 +162,7 @@ class PEINTModule(PLMRLitModule):
         for k, v in loss_info.items():
             self.log(f"val/{k}", v, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
-        return {"loss": loss, **loss_info}, ppl_per_bin
+        return {"loss": loss, **loss_info}, ll_per_bin
 
     def on_validation_epoch_end(self, *args, **kwargs) -> None:
         super().on_validation_epoch_end(*args, **kwargs)

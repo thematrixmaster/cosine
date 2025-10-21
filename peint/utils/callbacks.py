@@ -45,7 +45,7 @@ class ValidationLikelihoodCallback(Callback):
         super().__init__()
         self.time_quantized = time_quantized
 
-        self.ppl_per_bin = {}
+        self.ll_per_bin = {}
 
     def on_validation_batch_end(
         self,
@@ -56,18 +56,18 @@ class ValidationLikelihoodCallback(Callback):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
-        _, pplbin = outputs
-        for k, v in pplbin.items():
+        _, ll_bin = outputs
+        for k, v in ll_bin.items():
             if not self.time_quantized:
                 # really only the transformer encoder decoder will be time_quantized...
                 k = get_quantile_idx(VALID_BINS, k)
-            if k not in self.ppl_per_bin:
-                self.ppl_per_bin[k] = []
-            self.ppl_per_bin[k].extend(v)
+            if k not in self.ll_per_bin:
+                self.ll_per_bin[k] = []
+            self.ll_per_bin[k].extend(v)
 
     def on_validation_epoch_end(self, trainer, pl_module):
         arrmeans = np.zeros(len(VALID_BINS))
-        for k, v in self.ppl_per_bin.items():
+        for k, v in self.ll_per_bin.items():
             arrmeans[k] = np.exp(np.mean(v))
 
         nonzero = np.nonzero(arrmeans)[0]
@@ -92,7 +92,7 @@ class ValidationLikelihoodCallback(Callback):
             )
 
         # clear for next epoch
-        self.ppl_per_bin = {}
+        self.ll_per_bin = {}
 
 
 class GradNormCallback(Callback):

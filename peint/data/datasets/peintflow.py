@@ -7,7 +7,7 @@ from evo.tensor import collate_tensors
 from evo.tokenization import Vocab
 
 
-class PEINTFlowDataset(TorchWrapperDataset):
+class Dataset(TorchWrapperDataset):
     def __init__(
         self,
         dataset: ComplexCherriesDataset,

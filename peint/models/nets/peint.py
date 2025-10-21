@@ -74,12 +74,13 @@ class ESMEncoder(PretrainedEncoder):
         self.esm.eval() if not self.finetune else self.esm.train()
         self.esm.requires_grad_(self.finetune)  # freeze the ESM model
 
+    @property
     def embed_dim(self) -> int:
         return self.esm.embed_dim
 
-    def get_in_embedding(self) -> nn.Embedding:
+    def get_in_embedding(self) -> nn.Module:
         # embedding layer (optionally from the encoder)
-        in_embedding = nn.Embedding(len(self.vocab), self.embed_dim())
+        in_embedding = nn.Embedding(len(self.vocab), self.embed_dim)
         in_embedding.load_state_dict(self.esm.embed_tokens.state_dict())
         in_embedding.requires_grad_(self.finetune)
         return in_embedding
@@ -87,7 +88,7 @@ class ESMEncoder(PretrainedEncoder):
     def get_out_lm_head(self) -> nn.Module:
         # output layer
         lm_head = RobertaLMHead(
-            embed_dim=self.embed_dim(),
+            embed_dim=self.embed_dim,
             output_dim=len(self.vocab),
             weight=self.esm.embed_tokens.weight,
         )
@@ -111,7 +112,7 @@ class ESMEncoder(PretrainedEncoder):
         """
         bsz, seq_len = x.shape
         _num_sequences = (x_sizes > 0).sum(dim=1)
-        max_num_sequences = _num_sequences.max().item()
+        max_num_sequences = _num_sequences.max().int().item()
 
         combined_embedding = torch.zeros(
             (bsz, seq_len, (self.esm.embed_dim)), dtype=torch.float, device=x.device
@@ -219,6 +220,7 @@ class ESMCodonEncoder(ESMEncoder):
         nn.init.normal_(self.codon_embedding.weight, mean=0.0, std=0.02)
         self.codon_embedding.requires_grad_(True)
 
+    @property
     def embed_dim(self) -> int:
         return self.esm.embed_dim + self.codon_embed_dim
 
@@ -236,10 +238,10 @@ class ESMCodonEncoder(ESMEncoder):
     def get_out_lm_head(self) -> nn.Module:
         # output layer trained from scratch
         # create learnable weight for the lm head
-        weight = torch.randn(len(self.vocab), self.embed_dim()) * 0.02
+        weight = torch.randn(len(self.vocab), self.embed_dim) * 0.02
         lm_head_weight = nn.Parameter(weight, requires_grad=True)
         lm_head = RobertaLMHead(
-            embed_dim=self.embed_dim(),
+            embed_dim=self.embed_dim,
             output_dim=len(self.vocab),
             weight=lm_head_weight,
         )
@@ -311,7 +313,7 @@ class PEINT(nn.Module):
         self.num_decoder_layers = num_decoder_layers
         self.use_chain_embedding = use_chain_embedding
 
-        assert self.embed_dim == enc_model.embed_dim()
+        assert self.embed_dim == enc_model.embed_dim
         assert num_encoder_layers >= num_decoder_layers
 
         # Loss function
