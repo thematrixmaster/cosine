@@ -9,9 +9,7 @@ defaults:
   - override /data/dataset@data.dataset_train: dasm-tr
   - override /data/dataset@data.dataset_val: dasm-val
   - override /vocab: esm
-  - override /callbacks: default
-  - override /callbacks: grad_norm
-  - override /callbacks: val_likelihood
+  - override /callbacks: peint
   - override /metrics: none
   - override /model: peint
   - override /net: peint

@@ -7,9 +7,7 @@ defaults:
   - override /data: plmr
   - override /data/dataset: ctmc
   - override /vocab: esm
-  - override /callbacks: default
-  - override /callbacks: grad_norm
-  - override /callbacks: val_likelihood
+  - override /callbacks: peint
   - override /model: ctmc
   - override /net: ctmc
   - override /trainer: gpu
@@ -63,7 +61,7 @@ net:
 
 data:
   shuffle: true
-  num_workers: 8
+  num_workers: 7
   batch_size: 16
   train_val_split: [0.95, 0.05]
 

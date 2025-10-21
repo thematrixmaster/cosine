@@ -8,9 +8,7 @@ defaults:
   - override /data/dataset: pipet
   - override /data/dataset@data.dataset_val: dms
   - override /vocab: esm
-  - override /callbacks: default
-  - override /callbacks: grad_norm
-  - override /callbacks: val_likelihood
+  - override /callbacks: peint
   - override /metrics: koenig_dms
   - override /model: peint
   - override /net: peint

@@ -135,19 +135,19 @@ class CTMCModule(PLMRLitModule):
         # compute transition entropy per time bin
         entropy = -(log_probs * log_probs.exp()).sum(dim=-1)  # (B, L)
         entropy_flat = entropy[padding_mask]
-        for b in t:
-            k = get_quantile_idx(VALID_BINS, b.item())
-            self.h_per_bin[k].extend(entropy_flat[tbins == b].cpu().numpy())
 
-        # compute sparsity of off-diagonal rate matrix Q per time bin
+        # find min and max off-diagonal entries in Q per time bin
         V = len(self.net.vocab)
         off_diag_mask = ~torch.eye(V, dtype=bool, device=Q.device)  # (V, V)
-        q_sparsity = (Q[:, :, off_diag_mask].abs() < 1e-4).float()  # (B, L, V*(V-1))
-        q_sparsity = q_sparsity.sum(-1) / (V * (V - 1))  # (B, L)
-        q_sparsity_flat = q_sparsity[padding_mask]
+        min_q_flat = Q[:, :, off_diag_mask].min(dim=-1).values[padding_mask]
+        max_q_flat = Q[:, :, off_diag_mask].max(dim=-1).values[padding_mask]
+
+        # add to per-bin stats
         for b in t:
             k = get_quantile_idx(VALID_BINS, b.item())
-            self.qs_per_bin[k].extend(q_sparsity_flat[tbins == b].cpu().numpy())
+            self.min_q_per_bin[k].extend(min_q_flat[tbins == b].cpu().numpy())
+            self.max_q_per_bin[k].extend(max_q_flat[tbins == b].cpu().numpy())
+            self.h_per_bin[k].extend(entropy_flat[tbins == b].cpu().numpy())
 
         loss = mean_nll
         acc = (log_probs.argmax(-1)[padding_mask] == y[padding_mask]).float().mean().item()
@@ -169,11 +169,11 @@ class CTMCModule(PLMRLitModule):
     def on_validation_epoch_start(self):
         super().on_validation_epoch_start()
         self.h_per_bin = defaultdict(list)
-        self.qs_per_bin = defaultdict(list)
+        self.min_q_per_bin = defaultdict(list)
+        self.max_q_per_bin = defaultdict(list)
 
     def on_validation_epoch_end(self, *args, **kwargs) -> None:
         super().on_validation_epoch_end(*args, **kwargs)
-        # log transition ppl per time bin
         log_wandb_scatter(
             self.trainer,
             self.h_per_bin,
@@ -183,14 +183,22 @@ class CTMCModule(PLMRLitModule):
             title="Transition Perplexity per time bin",
             transform_fn=lambda v: np.exp(np.mean(v)),
         )
-        # log rate matrix sparsity per time bin
         log_wandb_scatter(
             self.trainer,
-            self.qs_per_bin,
-            name="rate-matrix-sparsity",
+            self.min_q_per_bin,
+            name="min-rate",
             xlabel="Time",
-            ylabel="Mean Rate Matrix Sparsity",
-            title="Rate Matrix Sparsity per time bin",
+            ylabel="Min Off-diagonal Rate",
+            title="Min Off-diagonal Rate per time bin",
+            transform_fn=lambda v: np.mean(v),
+        )
+        log_wandb_scatter(
+            self.trainer,
+            self.max_q_per_bin,
+            name="max-rate",
+            xlabel="Time",
+            ylabel="Max Off-diagonal Rate",
+            title="Max Off-diagonal Rate per time bin",
             transform_fn=lambda v: np.mean(v),
         )
 
