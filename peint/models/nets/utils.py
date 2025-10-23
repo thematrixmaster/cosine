@@ -10,6 +10,8 @@ def _expand_chain_attr_to_seqlen(
     Expand the per chain property to a per-token property by repeating
     using the length of each sequence in the batch
     """
+    sizes = sizes.unsqueeze(-1) if sizes.dim() == 1 else sizes
+    chain_attr = chain_attr.unsqueeze(-1) if chain_attr.dim() == 1 else chain_attr
     pos = torch.full_like(sizes, pad_value, dtype=chain_attr.dtype)
     B, _ = sizes.size()
     for i in range(B):

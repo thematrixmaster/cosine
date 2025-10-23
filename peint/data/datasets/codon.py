@@ -1,9 +1,12 @@
+import tempfile
+
 import numpy as np
 import torch
 
 from evo.dataset import ComplexCherriesDataset, TorchWrapperDataset
 from evo.tensor import collate_tensors, mask_tensor
 from evo.tokenization import CodonVocab
+from peint.data.datamodule import PLMRDataModule
 
 
 class CodonDataset(TorchWrapperDataset):
@@ -116,10 +119,33 @@ class CodonDataset(TorchWrapperDataset):
         )
 
 
+def dataloader_from_transitions(transitions, vocab, batch_size=32, mask_prob=0.0, datapath=None):
+    if datapath is None:
+        datafile = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+        with open(datafile.name, "w") as f:
+            f.write("{0} transitions\n".format(len(transitions)))
+            f.write("\n".join(transitions))
+        datapath = datafile.name
+    dataset = CodonDataset(
+        dataset=ComplexCherriesDataset(data_file=datapath, min_t=0.0, chain_id_offset=1),
+        vocab=vocab,
+        mask_prob=mask_prob,
+        random_token_prob=0.0,
+        leave_unmasked_prob=0.0,
+        permute_chain_order=False,
+        embed_x_per_chain=True,
+    )
+    dataloader = PLMRDataModule(
+        dataset=dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=0,
+    )._dataloader_template(dataset=dataset, training=False)
+    return dataloader
+
+
 if __name__ == "__main__":
     from tqdm import tqdm
-
-    from ..datamodule import PLMRDataModule
 
     vocab = CodonVocab.from_codons()
 

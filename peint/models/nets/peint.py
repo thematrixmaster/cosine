@@ -20,7 +20,6 @@ from peint.models.nets.transformer import (
     KV_CachedFlashMHADecoderBlock,
 )
 from peint.models.nets.utils import (
-    _create_padding_mask,
     _create_sequence_mask,
     _expand_chain_attr_to_seqlen,
 )
@@ -399,8 +398,8 @@ class PEINT(nn.Module):
         h_y = h_y + ht
 
         # Create attention masks from sizes (1 for data, 0 for pad)
-        x_attn_mask = _create_padding_mask(x_sizes)
-        y_attn_mask = _create_padding_mask(y_sizes)
+        x_attn_mask = (x != self.vocab.pad_idx).long()
+        y_attn_mask = (y != self.vocab.pad_idx).long()
 
         # Add chain embeddings to h_y
         if self.chain_embedding is not None and chain_ids is not None:
@@ -411,6 +410,9 @@ class PEINT(nn.Module):
 
         if use_cache:
             assert isinstance(self.dec_layers[0], KV_CachedFlashMHADecoderBlock)
+            assert y.shape[1] == 1, "When using cache, decoder input y should be of length 1"
+            assert y_sizes.shape[1] == 1, "When using cache, y_sizes should have shape (B, 1)"
+            assert torch.all(y_sizes == 1).item(), "When using cache, y_sizes should be all ones"
 
             # Used cached encoder and decoder key/values for generation
             for i, dec_layer in enumerate(self.dec_layers):
@@ -554,14 +556,24 @@ class PEINTGenerator(PEINT):
 
         # Initialize output with start token
         y_decoded = torch.tensor([self.vocab.bos_idx]).unsqueeze(0).repeat(batch_size, 1).to(device)
-        y_sizes_decoded = torch.ones((batch_size, self.num_chains), dtype=torch.long).to(device)
+        y_sizes_decoded = torch.zeros((batch_size, self.num_chains), dtype=torch.long).to(device)
+        y_sizes_single = torch.ones((batch_size, 1), dtype=torch.long).to(device)
         y_chain_idx = torch.zeros((batch_size,), dtype=torch.long).to(device)
+        y_sizes_decoded[:, y_chain_idx] = 1  # account for BOS token
+        batch_indices = torch.arange(batch_size, device=device)
         eos_reached = torch.zeros(batch_size, dtype=torch.bool).to(device)
 
         # First forward pass to fill KV cache and get initial logits
-        logits = self.forward(
-            x=xs, y=y_decoded, t=ts, x_sizes=x_sizes, y_sizes=y_sizes, chain_ids=chain_ids
-        )
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            logits = self.forward(
+                x=xs,
+                y=y_decoded,
+                t=ts[batch_indices, y_chain_idx],
+                x_sizes=x_sizes,
+                y_sizes=y_sizes_single,
+                chain_ids=chain_ids,
+                use_cache=False,
+            )["dec_logits"]
 
         for _ in tqdm(range(max_decode_steps - 1)):
             logits = logits[:, -1, :] / temperature
@@ -576,13 +588,16 @@ class PEINTGenerator(PEINT):
                 zero_idx = torch.tensor(special_tok_idxs, device=logits.device)
                 logits[..., zero_idx] = -np.inf
 
+            # sample next token
             next_token = sampling_function(logits, p=p)
-            logits = self.forward(
-                x=xs, y=next_token, t=ts, x_sizes=x_sizes, y_sizes=y_sizes, use_cache=True
-            )
 
             # append next_token to y_decoded
+            next_token = torch.where(eos_reached.unsqueeze(-1), self.vocab.pad_idx, next_token)
             y_decoded = torch.cat([y_decoded, next_token], dim=1)
+
+            # # gather tokens at eos_reached positions
+            # eos_next_token = next_token[eos_reached]
+            # assert torch.all(eos_next_token == self.vocab.pad_idx), "Tokens generated after EOS should be PAD"
 
             # update y_sizes_decoded
             if y_sizes is None:
@@ -590,18 +605,133 @@ class PEINTGenerator(PEINT):
                 # check if chain has reached eos and if number of chains <= self.num_chains
                 # eos_reached |= (next_token.squeeze(-1) == self.vocab.eos_idx)
             else:
-                y_sizes_decoded[:, y_chain_idx] += 1
+                y_sizes_decoded[batch_indices, y_chain_idx] += 1
                 # Move to next chain if chain length is reached according to y_sizes
-                finished_chains = y_sizes_decoded[:, y_chain_idx] >= y_sizes[:, y_chain_idx]
+                finished_chains = (
+                    y_sizes_decoded[batch_indices, y_chain_idx]
+                    == y_sizes[batch_indices, y_chain_idx]
+                )
                 y_chain_idx += finished_chains.long()
                 eos_reached |= y_chain_idx >= self.num_chains
+                y_chain_idx = torch.clamp(y_chain_idx, max=self.num_chains - 1)
 
+            # stop if all sequences have reached eos
             if eos_reached.all():
                 break
+
+            # forward pass with updated token
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                logits = self.forward(
+                    x=xs,
+                    y=next_token,
+                    t=ts[batch_indices, y_chain_idx],
+                    x_sizes=x_sizes,
+                    y_sizes=y_sizes_single,
+                    chain_ids=(
+                        chain_ids[batch_indices, y_chain_idx] if chain_ids is not None else None
+                    ),
+                    use_cache=True,
+                )["dec_logits"]
 
         self._reset_kv_cache()
         return y_decoded
 
 
+def decode_sequence_from_toks(toks: np.ndarray, vocab: Vocab) -> str:
+    tokens = []
+    for tok in toks:
+        if tok == vocab.bos_idx:
+            continue
+        if tok == vocab.eos_idx or tok == vocab.pad_idx:
+            break
+        tokens.append(vocab.token(tok))
+    return "".join(tokens)
+
+
 if __name__ == "__main__":
-    pass
+    from pathlib import Path
+
+    from peint.data.datasets.codon import dataloader_from_transitions
+    from peint.models.modules.peint_module import PEINTModule
+
+    # Load trained joint model from checkpoint
+    ckpt_dir = Path("/mfs1/u/stephenzlu/projects/peint/checkpoints")
+    ckpt_path = ckpt_dir / "last.ckpt"
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    # create a fresh peint model with the same hyperparameters as the training run
+    vocab = CodonVocab.from_codons()
+    esm_encoder = ESMCodonEncoder.from_pretrained(
+        codon_vocab=vocab,
+        codon_embed_dim=384,
+    )
+    net = PEINT(
+        enc_model=esm_encoder,
+        evo_vocab=vocab,
+        embed_dim=1024,
+        num_heads=16,
+        num_chains=2,
+        num_encoder_layers=3,
+        num_decoder_layers=3,
+        max_len=1022,
+        dropout_p=0.0,
+        use_chain_embedding=True,
+        use_attention_bias=True,
+        causal_decoder=True,
+    )
+    module = PEINTModule.load_from_checkpoint(ckpt_path, net=net, map_location=device, strict=False)
+    module.net.in_embedding.codon_embedding.weight = module.net.enc_model.codon_embedding.weight
+    module = module.eval()
+
+    # load the test dataset
+    datapath = Path("data/d4.txt")
+    dataloader = dataloader_from_transitions(
+        transitions=None, vocab=vocab, datapath=datapath, batch_size=32
+    )
+
+    # load the generator from the peint model
+    generator = PEINTGenerator.from_peint(module.net).to(device)
+
+    # for each transition in the test set, sample a child sequence using the model and compute its hamming distance + codon usage compared to the true child sequence
+    real_child_nt_sequences = []
+    sim_child_nt_sequences = []
+    n_batches = 100
+
+    for batch in tqdm(dataloader, desc="Inference"):
+        batch = [b.to(device) for b in batch]
+        [x_src, x_tgt, y_src, y_tgt, ts, chain_ids, x_sizes, y_sizes] = batch
+
+        # get heavy chain lengths
+        hc_lens = y_sizes[:, 0] * 3
+
+        # decode the true child sequence using the vocab
+        true_child_seqs = [
+            decode_sequence_from_toks(y_tgt[i].cpu().numpy(), vocab) for i in range(y_tgt.size(0))
+        ]
+        true_hv_seqs, true_lt_seqs = zip(
+            *[(seq[:hl], seq[hl:]) for seq, hl in zip(true_child_seqs, hc_lens)]
+        )
+        assert all(
+            [len(tc) == (ys.sum().item() - 1) * 3 for tc, ys in zip(true_child_seqs, y_sizes)]
+        )
+
+        # sample a child sequence using the model
+        y_decoded = generator.dec_generate(
+            ts=ts, xs=x_src, x_sizes=x_sizes, y_sizes=y_sizes, chain_ids=chain_ids
+        )
+        sim_child_seqs = [
+            decode_sequence_from_toks(y_decoded[i].cpu().numpy(), vocab)
+            for i in range(y_decoded.size(0))
+        ]
+        sim_hv_seqs, sim_lt_seqs = zip(
+            *[(seq[:hl], seq[hl:]) for seq, hl in zip(sim_child_seqs, hc_lens)]
+        )
+        assert all([len(tc) == len(sc) for tc, sc in zip(true_child_seqs, sim_child_seqs)])
+
+        n_batches -= 1
+        if n_batches == 0:
+            break
+
+    # breakpoint()
