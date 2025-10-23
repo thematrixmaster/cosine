@@ -13,11 +13,12 @@ class CodonDataset(TorchWrapperDataset):
         self,
         dataset: ComplexCherriesDataset,
         vocab: CodonVocab,
+        sep_token: str = ".",
         mask_prob: float = 0.15,
         random_token_prob: float = 0.1,
         leave_unmasked_prob: float = 0.1,
-        embed_x_per_chain: bool = False,
-        permute_chain_order: bool = False,
+        embed_x_per_chain: bool = True,
+        permute_chain_order: bool = True,
         permute_method: str | None = "random",  # "random" or "reverse"
         *args,
         **kwargs,
@@ -29,6 +30,7 @@ class CodonDataset(TorchWrapperDataset):
         self.embed_x_per_chain = embed_x_per_chain
         self.permute_chain_order = permute_chain_order
         self.permute_method = permute_method
+        self.sep_token = sep_token
         assert permute_method in [
             "random",
             "reverse",

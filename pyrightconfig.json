@@ -10,5 +10,6 @@
         "configs",
         "docs",
         "logs"
-    ]
+    ],
+    "typeCheckingMode": "off"
 }

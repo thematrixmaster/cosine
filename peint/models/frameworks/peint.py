@@ -102,7 +102,7 @@ def load_from_new_checkpoint(checkpoint_path: str, device: str = "cpu") -> PEINT
     return module.to(device).eval()
 
 
-def sampling_function(logits: torch.Tensor, p=0.9, argmax_sample=False):
+def sampling_function(logits, p=0.9, argmax_sample=False):
     """
     Perform top p sampling on the given logits.
 
@@ -113,8 +113,7 @@ def sampling_function(logits: torch.Tensor, p=0.9, argmax_sample=False):
     Returns:
     torch.Tensor: Sampled token indices of shape [batch_size, 1]
     """
-
-    probs = nn.functional.softmax(logits, dim=-1)
+    probs = torch.nn.functional.softmax(logits, dim=-1)
 
     if argmax_sample or p == 0.0:
         return probs.argmax(-1, keepdim=True)

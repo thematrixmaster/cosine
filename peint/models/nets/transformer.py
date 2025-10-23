@@ -564,7 +564,7 @@ class FlashMHAEncoderBlock(nn.Module):
 
     def forward(self, x, x_attn_mask=None, **kwargs):
         """
-        Forward pass using the x sequence. kwargs should contain the x padding mask as x_padding_mask.
+        Forward pass using the x sequence. kwargs should contain the x_attn_mask
         """
         residual = x
         x = self.self_attn_layer_norm(x)
@@ -638,8 +638,7 @@ class FlashMHADecoderBlock(nn.Module):
 
     def forward(self, x, y, x_attn_mask=None, y_attn_mask=None, **kwargs):
         """
-        Forward pass using the x sequence and the y sequence. kwargs should contain both the
-        x and y padding masks as x_padding_mask and y_padding_mask.
+        Forward pass using the x sequence and the y sequence for cross-attention.
 
         The unpadding and repadding is done in the FlashMHA module so that rotary embeddings can be used.
 
@@ -711,7 +710,16 @@ class KVCached_MHCA(RopeFlashMHA):
         )
         self.cache_size = 0
 
-    def forward(self, x, y=None, x_padding_mask=None, y_padding_mask=None, decoder_cache_size=0):
+    def forward(
+        self,
+        x,
+        y=None,
+        x_attn_mask=None,
+        y_attn_mask=None,
+        decoder_cache_size=0,
+        *args,
+        **kwargs,
+    ):
         Bx, Lx, Dx = x.size()
 
         if self.kv_cache is None or self.kv_cache.size(0) != Bx:
@@ -753,15 +761,15 @@ class KVCached_MHCA(RopeFlashMHA):
                 q, cos[decoder_cache_size], sin[decoder_cache_size]
             )  # this gets the seqlen offset for you
 
-        if x_padding_mask is None:
-            x_padding_mask = torch.ones(Bx, Lx, device=x.device, dtype=torch.bool)
+        if x_attn_mask is None:
+            x_attn_mask = torch.ones(Bx, Lx, device=x.device, dtype=torch.bool)
 
-        q, idx_q, cu_seqlens_q, max_seqlen_q, _ = unpad_input(q, x_padding_mask)
+        q, idx_q, cu_seqlens_q, max_seqlen_q, _ = unpad_input(q, x_attn_mask)
 
-        if y_padding_mask is None:
-            y_padding_mask = torch.ones(Bx, self.cache_size, device=x.device, dtype=torch.bool)
+        if y_attn_mask is None:
+            y_attn_mask = torch.ones(Bx, self.cache_size, device=x.device, dtype=torch.bool)
 
-        kv, idx_k, cu_seqlens_k, max_seqlen_k, _ = unpad_input(kv, y_padding_mask)
+        kv, idx_k, cu_seqlens_k, max_seqlen_k, _ = unpad_input(kv, y_attn_mask)
 
         out = flash_attn_varlen_kvpacked_func(
             q,
@@ -921,7 +929,7 @@ class KVCached_MHSA(nn.Module):
         )
         self.cache_size = 0
 
-    def forward(self, x, x_padding_mask=None):
+    def forward(self, x, x_attn_mask=None, *args, **kwargs):
         batch_size, seq_len, _ = x.shape
 
         if self.kv_cache is None or self.kv_cache.size(0) != batch_size:
@@ -983,6 +991,7 @@ class KV_CachedFlashMHADecoderBlock(nn.Module):
         max_encoder_seq_len: int = 1024,
         max_decoder_seq_len: int = 1024,
         layer_idx: Optional[int] = None,
+        causal: bool = True,
         **kwargs,
     ):
         super().__init__()
@@ -1001,7 +1010,7 @@ class KV_CachedFlashMHADecoderBlock(nn.Module):
             embed_dim=embed_dim,
             num_heads=attention_heads,
             bias=use_bias,
-            causal=True,
+            causal=causal,
             layer_idx=layer_idx,
             dropout=dropout_p,
             max_seq_len=max_decoder_seq_len,  # can decode longer
@@ -1021,13 +1030,12 @@ class KV_CachedFlashMHADecoderBlock(nn.Module):
         self.fc1 = nn.Linear(embed_dim, ffn_embed_dim)
         self.fc2 = nn.Linear(ffn_embed_dim, embed_dim)
 
-    def forward(self, x, y, **kwargs):
-        self_attn_kwargs = {"x_padding_mask": kwargs.get("x_padding_mask", None)}
+    def forward(self, x, y, x_attn_mask=None, y_attn_mask=None, **kwargs):
 
         # causal self-attention
         residual = x
         x = self.self_attn_layer_norm(x)
-        x = self.self_attn(x=x, **self_attn_kwargs)
+        x = self.self_attn(x=x, x_attn_mask=x_attn_mask)
         x = x + residual
 
         # cross attention
@@ -1036,9 +1044,10 @@ class KV_CachedFlashMHADecoderBlock(nn.Module):
         x = self.cross_attn(
             x=x,
             y=y,
+            x_attn_mask=x_attn_mask,
+            y_attn_mask=y_attn_mask,
             decoder_cache_size=self.self_attn.cache_size
             - 1,  # -1 because it gets updated in the prior step
-            **kwargs,
         )
         x = x + residual
 

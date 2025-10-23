@@ -1,18 +1,22 @@
 from abc import ABC, abstractmethod
 from typing import Dict
 
+import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from esm.model.esm2 import ESM2
 from esm.modules import RobertaLMHead
 from torch import Tensor
 
 from evo.tokenization import CodonVocab, Vocab
+from peint.models.frameworks.peint import sampling_function
 from peint.models.nets.esm2 import ESM2Flash
 from peint.models.nets.transformer import (
     FlashMHADecoderBlock,
     FlashMHAEncoderBlock,
     GeometricTimeEmbedder,
+    KV_CachedFlashMHADecoderBlock,
 )
 from peint.models.nets.utils import (
     _create_padding_mask,
@@ -25,7 +29,7 @@ class PretrainedEncoder(ABC, nn.Module):
     """Abstract base class for pretrained encoders."""
 
     def __init__(self, vocab: Vocab, embed_x_per_chain: bool = False):
-        super(PretrainedEncoder, self).__init__()
+        super().__init__()
         self.vocab = vocab
         self.embed_x_per_chain = embed_x_per_chain
 
@@ -168,10 +172,35 @@ class ESMEncoder(PretrainedEncoder):
         return cls(esm_model=esm_model, vocab=evo_vocab, *args, **kwargs)
 
 
+class HybridEmbedding(nn.Module):
+    def __init__(
+        self,
+        aa_vocab_size: int,
+        esm_embed_dim: int,
+        esm_embed_tokens_state_dict: Dict[str, Tensor],
+        codon_embedding: nn.Embedding,
+        codon_to_aa_mapping: Tensor,
+        finetune=False,
+    ):
+        super().__init__()
+        self.aa_embedding = nn.Embedding(aa_vocab_size, esm_embed_dim)
+        self.aa_embedding.load_state_dict(esm_embed_tokens_state_dict)
+        self.aa_embedding.requires_grad_(finetune)
+        self.codon_embedding = codon_embedding
+        self.codon_to_aa_mapping = codon_to_aa_mapping
+
+    def forward(self, x: Tensor) -> Tensor:
+        aa_tok_idx = self.codon_to_aa_mapping[x]  # (B, L)
+        aa_emb = self.aa_embedding(aa_tok_idx)  # (B, L, esm_embed_dim)
+        codon_emb = self.codon_embedding(x)  # (B, L, codon_embed_dim)
+        return torch.cat([codon_emb, aa_emb], dim=-1)
+
+
 class ESMCodonEncoder(ESMEncoder):
     """Encoder that concatenates learned codon embeddings with frozen ESM amino acid embeddings."""
 
     vocab: CodonVocab
+    codon_to_aa_mapping: Tensor
 
     def __init__(
         self,
@@ -184,8 +213,8 @@ class ESMCodonEncoder(ESMEncoder):
         super().__init__(vocab=codon_vocab, *args, **kwargs)
         self.aa_vocab = vocab
         self.codon_embed_dim = codon_embed_dim
-        self.codon_to_aa_mapping = codon_vocab.translation_tensor_map(aa_vocab=vocab).cuda()
-        print(self.codon_to_aa_mapping.device)
+        codon_to_aa_mapping = codon_vocab.translation_tensor_map(aa_vocab=vocab).cuda()
+        self.register_buffer("codon_to_aa_mapping", codon_to_aa_mapping)
         self.codon_embedding = nn.Embedding(len(self.vocab), self.codon_embed_dim)
         nn.init.normal_(self.codon_embedding.weight, mean=0.0, std=0.02)
         self.codon_embedding.requires_grad_(True)
@@ -193,23 +222,16 @@ class ESMCodonEncoder(ESMEncoder):
     def embed_dim(self) -> int:
         return self.esm.embed_dim + self.codon_embed_dim
 
-    def get_in_embedding(self) -> nn.Embedding:
+    def get_in_embedding(self) -> nn.Module:
         """Hybrid embedding layer that concatenates codon and amino acid embeddings."""
-
-        class HybridEmbedding(nn.Module):
-            def __init__(module_self):
-                super().__init__()
-                module_self.aa_embedding = nn.Embedding(len(self.aa_vocab), self.esm.embed_dim)
-                module_self.aa_embedding.load_state_dict(self.esm.embed_tokens.state_dict())
-                module_self.aa_embedding.requires_grad_(self.finetune)
-
-            def forward(module_self, x: Tensor) -> Tensor:
-                aa_tok_idx = self.codon_to_aa_mapping[x]  # (B, L)
-                aa_emb = module_self.aa_embedding(aa_tok_idx)  # (B, L, esm_embed_dim)
-                codon_emb = self.codon_embedding(x)  # (B, L, codon_embed_dim)
-                return torch.cat([codon_emb, aa_emb], dim=-1)  # (B, L, codon+esm_embed_dim)
-
-        return HybridEmbedding()
+        return HybridEmbedding(
+            aa_vocab_size=len(self.aa_vocab),
+            esm_embed_dim=self.esm.embed_dim,
+            esm_embed_tokens_state_dict=self.esm.embed_tokens.state_dict(),
+            codon_embedding=self.codon_embedding,
+            codon_to_aa_mapping=self.codon_to_aa_mapping,
+            finetune=self.finetune,
+        )
 
     def get_out_lm_head(self) -> nn.Module:
         # output layer trained from scratch
@@ -274,7 +296,7 @@ class PEINT(nn.Module):
         use_attention_bias: bool = True,
         causal_decoder: bool = True,
     ):
-        super(PEINT, self).__init__()
+        super().__init__()
 
         self.vocab = evo_vocab
         self.max_len = max_len
@@ -282,9 +304,12 @@ class PEINT(nn.Module):
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.dropout_p = dropout_p
+        self.num_chains = num_chains
         self.use_bias = use_attention_bias
+        self.causal_decoder = causal_decoder
         self.num_encoder_layers = num_encoder_layers
         self.num_decoder_layers = num_decoder_layers
+        self.use_chain_embedding = use_chain_embedding
 
         assert self.embed_dim == enc_model.embed_dim()
         assert num_encoder_layers >= num_decoder_layers
@@ -345,6 +370,7 @@ class PEINT(nn.Module):
         x_sizes: Tensor,
         y_sizes: Tensor,
         chain_ids: Tensor = None,
+        use_cache: bool = False,
     ) -> Dict[str, Tensor]:
         """
         Unified forward pass using standardized size-based interface.
@@ -356,6 +382,7 @@ class PEINT(nn.Module):
             x_sizes: Sequence sizes for encoder (batch_size, seq_len)
             y_sizes: Sequence sizes for decoder (batch_size, seq_len)
             chain_ids: Chain IDs for each sequence in the batch (batch_size, num_chains)
+            use_cache: Whether to use cached key/value states in the decoder (for generation)
 
         Returns:
             Dict with 'enc_logits' and 'dec_logits' keys
@@ -374,19 +401,32 @@ class PEINT(nn.Module):
         x_attn_mask = _create_padding_mask(x_sizes)
         y_attn_mask = _create_padding_mask(y_sizes)
 
-        # Get pretrained encoder representations
+        # Add chain embeddings to h_y
+        if self.chain_embedding is not None and chain_ids is not None:
+            chain_attr_expanded_y = _expand_chain_attr_to_seqlen(
+                chain_attr=chain_ids, sizes=y_sizes, pad_value=0
+            )
+            h_y = h_y + self.chain_embedding(chain_attr_expanded_y.long())
+
+        if use_cache:
+            assert isinstance(self.dec_layers[0], KV_CachedFlashMHADecoderBlock)
+
+            # Used cached encoder and decoder key/values for generation
+            for i, dec_layer in enumerate(self.dec_layers):
+                h_y = dec_layer(x=h_y, x_attn_mask=y_attn_mask, y=None, y_attn_mask=x_attn_mask)
+
+            y_logits = self.out_lm_head(h_y)
+            return dict(enc_logits=None, dec_logits=y_logits)
+
+        # Get encoder hidden representations
         h_x = self.enc_model.forward(x=x, x_sizes=x_sizes)
 
-        # Add chain embeddings to both h_x and h_y if available
+        # Add chain embeddings to h_x
         if self.chain_embedding is not None and chain_ids is not None:
             chain_attr_expanded_x = _expand_chain_attr_to_seqlen(
                 chain_attr=chain_ids, sizes=x_sizes, pad_value=0
             )
-            chain_attr_expanded_y = _expand_chain_attr_to_seqlen(
-                chain_attr=chain_ids, sizes=y_sizes, pad_value=0
-            )
             h_x = h_x + self.chain_embedding(chain_attr_expanded_x.long())
-            h_y = h_y + self.chain_embedding(chain_attr_expanded_y.long())
 
         # Encoder-decoder forward pass
         for i, enc_layer in enumerate(self.enc_layers):
@@ -398,7 +438,7 @@ class PEINT(nn.Module):
                 idx = self.num_decoder_layers - self.num_encoder_layers + i
                 dec_layer = self.dec_layers[idx]
                 # Decoder layer (args: x means main input, y is cross attended input)
-                h_y = dec_layer(x=h_y, x_attn_mas=y_attn_mask, y=h_x, y_attn_mask=x_attn_mask)
+                h_y = dec_layer(x=h_y, x_attn_mask=y_attn_mask, y=h_x, y_attn_mask=x_attn_mask)
 
         # Generate logits
         x_logits = self.out_lm_head(h_x)
@@ -409,3 +449,158 @@ class PEINT(nn.Module):
 
         # Return dictionary format
         return dict(enc_logits=x_logits, dec_logits=y_logits)
+
+    @torch.no_grad()
+    def dec_perplexity(
+        self,
+        ts: Tensor,
+        x_src: Tensor,
+        y_src: Tensor,
+        y_tgt: Tensor,
+        x_sizes: Tensor,
+        y_sizes: Tensor,
+        chain_ids: Tensor,
+    ) -> Tensor:
+        """
+        Computes the decoder perplexity on the target sequences given the source sequence and context.
+        """
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            outputs = self.forward(
+                x_src, y_src, ts, x_sizes=x_sizes, y_sizes=y_sizes, chain_ids=chain_ids
+            )
+
+        y_logits = outputs["dec_logits"]
+        y_logits = y_logits - torch.logsumexp(y_logits, dim=-1, keepdim=True)
+        y_logits = y_logits.transpose(-1, -2)
+        nll = F.cross_entropy(y_logits, y_tgt, ignore_index=self.vocab.pad_idx, reduction="none")
+
+        y_tgt_mask = y_tgt != self.vocab.pad_idx
+        nll_mean = (nll * y_tgt_mask).sum(dim=1) / y_tgt_mask.sum(dim=1)
+        ppl = torch.exp(nll_mean)
+        return ppl
+
+
+class PEINTGenerator(PEINT):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.dec_layers = nn.ModuleList(
+            [
+                KV_CachedFlashMHADecoderBlock(
+                    embed_dim=self.embed_dim,
+                    ffn_embed_dim=4 * self.embed_dim,
+                    attention_heads=self.num_heads,
+                    add_bias_kv=False,
+                    causal=self.causal_decoder,
+                    dropout_p=self.dropout_p,
+                    use_bias=self.use_bias,
+                    max_encoder_seq_len=self.max_len,
+                    max_decoder_seq_len=self.max_len,
+                    layer_idx=l,
+                )
+                for l in range(self.num_decoder_layers)
+            ]
+        )
+
+    @classmethod
+    def from_peint(cls, peint_model: PEINT) -> "PEINTGenerator":
+        kwargs = {
+            "enc_model": peint_model.enc_model,
+            "evo_vocab": peint_model.vocab,
+            "embed_dim": peint_model.embed_dim,
+            "num_heads": peint_model.num_heads,
+            "num_chains": peint_model.num_chains,
+            "num_encoder_layers": peint_model.num_encoder_layers,
+            "num_decoder_layers": peint_model.num_decoder_layers,
+            "max_len": peint_model.max_len,
+            "dropout_p": peint_model.dropout_p,
+            "use_chain_embedding": peint_model.use_chain_embedding,
+            "use_attention_bias": peint_model.use_bias,
+            "causal_decoder": peint_model.causal_decoder,
+        }
+        generator = cls(**kwargs)
+        generator.load_state_dict(peint_model.state_dict())
+        return generator
+
+    def _reset_kv_cache(self):
+        for dec_layer in self.dec_layers:
+            dec_layer.cross_attn.kv_cache = None  # This will reset the cache
+            dec_layer.self_attn.reset_kv_cache()
+
+    @torch.no_grad()
+    def dec_generate(
+        self,
+        ts: torch.Tensor,
+        xs: torch.Tensor,
+        x_sizes: torch.Tensor,
+        y_sizes: torch.Tensor = None,  # use for fixed length decoding |x| = |y|
+        chain_ids: torch.Tensor = None,
+        max_decode_steps: int = None,
+        no_special_toks: bool = True,
+        temperature: float = 1.0,
+        p: float = 1.0,
+    ) -> Tensor:
+        """Generate sequences using top p nucleus sampling"""
+        batch_size = xs.size(0)
+        device = xs.device
+
+        # Limit max_decode_steps to account for both start and stop tokens
+        max_context_len = self.max_len - (self.vocab.prepend_bos + self.vocab.append_eos)
+        max_decode_steps = min(max_decode_steps, max_context_len)
+
+        for dec_layer in self.dec_layers:
+            dec_layer.self_attn.init_kv_cache(batch_size, max_decode_steps)
+
+        # Initialize output with start token
+        y_decoded = torch.tensor([self.vocab.bos_idx]).unsqueeze(0).repeat(batch_size, 1).to(device)
+        y_sizes_decoded = torch.ones((batch_size, self.num_chains), dtype=torch.long).to(device)
+        y_chain_idx = torch.zeros((batch_size,), dtype=torch.long).to(device)
+        eos_reached = torch.zeros(batch_size, dtype=torch.bool).to(device)
+
+        # First forward pass to fill KV cache and get initial logits
+        logits = self.forward(
+            x=xs, y=y_decoded, t=ts, x_sizes=x_sizes, y_sizes=y_sizes, chain_ids=chain_ids
+        )
+
+        for _ in range(max_decode_steps - 1):
+            logits = logits[:, -1, :] / temperature
+
+            if no_special_toks:
+                special_tok_idxs = [
+                    self.vocab.bos_idx,
+                    self.vocab.pad_idx,
+                    self.vocab.mask_idx,
+                    self.vocab.unk_idx,
+                ]
+                zero_idx = torch.tensor(special_tok_idxs, device=logits.device)
+                logits[..., zero_idx] = -np.inf
+
+            next_token = sampling_function(logits, p=p)
+            logits = self.forward(
+                x=xs, y=next_token, t=ts, x_sizes=x_sizes, y_sizes=y_sizes, use_cache=True
+            )
+
+            # append next_token to y_decoded
+            y_decoded = torch.cat([y_decoded, next_token], dim=1)
+
+            # update y_sizes_decoded
+            if y_sizes is None:
+                raise NotImplementedError("Dynamic length decoding not implemented yet.")
+                # check if chain has reached eos and if number of chains <= self.num_chains
+                # eos_reached |= (next_token.squeeze(-1) == self.vocab.eos_idx)
+            else:
+                y_sizes_decoded[:, y_chain_idx] += 1
+                # Move to next chain if chain length is reached according to y_sizes
+                finished_chains = y_sizes_decoded[:, y_chain_idx] >= y_sizes[:, y_chain_idx]
+                y_chain_idx += finished_chains.long()
+                eos_reached |= y_chain_idx >= self.num_chains
+
+            if eos_reached.all():
+                break
+
+        self._reset_kv_cache()
+        return y_decoded
+
+
+if __name__ == "__main__":
+    pass
