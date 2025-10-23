@@ -1,3 +1,5 @@
+import os
+import sys
 from functools import partial
 from typing import Dict, List
 
@@ -8,7 +10,7 @@ from transformers.optimization import get_polynomial_decay_schedule_with_warmup
 
 from peint.metrics.api import Metric
 from peint.models.modules.plmr_module import PLMRLitModule
-from peint.models.nets.peint import PEINT
+from peint.models.nets.peint import PEINT, ESMEncoder
 
 
 class PEINTModule(PLMRLitModule):
@@ -205,3 +207,90 @@ class PEINTModule(PLMRLitModule):
                 },
             }
         return {"optimizer": optimizer}
+
+
+def load_from_old_checkpoint(checkpoint_path: str, device: str = "cpu") -> PEINTModule:
+    """
+    Load a PEINTModule from an old checkpoint format.
+    """
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Checkpoint file {checkpoint_path} does not exist.")
+
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    hyperparams = checkpoint.get("hyper_parameters", {})
+
+    enc_model = ESMEncoder.from_pretrained(
+        dropout_p=hyperparams.get("dropout_p", 0.0),
+        finetune=False,
+        embed_x_per_chain=False,
+    )
+    peint = PEINT(
+        enc_model=enc_model,
+        evo_vocab=enc_model.vocab,
+        num_chains=1,
+        causal_decoder=True,
+        use_chain_embedding=False,
+        num_heads=hyperparams["num_heads"],
+        embed_dim=hyperparams["embed_dim"],
+        max_len=hyperparams["max_seq_len"],
+        num_encoder_layers=hyperparams["num_encoder_layers"],
+        num_decoder_layers=hyperparams["num_decoder_layers"],
+        dropout_p=hyperparams.get("dropout_p", 0.0),
+        use_attention_bias=hyperparams.get("use_attention_bias", True),
+    )
+
+    module = PEINTModule(
+        net=peint,
+        weight_decay=hyperparams.get("weight_decay", 0.0),
+        compile=hyperparams.get("compile", False),
+    )
+
+    state_dict = {}
+    for k, v in checkpoint["state_dict"].items():
+        if k.startswith("model.esm"):
+            continue
+        assert k.startswith("model.")
+        state_dict[k.replace("model.", "net.")] = v
+
+    missing_keys, unexpected_keys = module.load_state_dict(state_dict=state_dict)
+    assert all(k.startswith("net.esm") for k in missing_keys)
+    assert len(unexpected_keys) == 0
+
+    return module.to(device).eval()
+
+
+def load_from_new_checkpoint(checkpoint_path: str, device: str = "cpu") -> PEINTModule:
+    """
+    Load a PEINTModule from a checkpoint that contains the PEINT model.
+    """
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Checkpoint file {checkpoint_path} does not exist.")
+
+    import peint
+
+    sys.modules["plmr"] = peint
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    hyperparams = checkpoint.get("hyper_parameters", {})
+    net = hyperparams.get("net")
+
+    _net_type = type(net).__name__
+    if _net_type != "PEINT":
+        raise ValueError("Checkpoint does not contain a valid PEINT model.")
+
+    if net.finetune_esm:
+        module = PEINTModule.load_from_checkpoint(checkpoint_path=checkpoint_path, strict=True)
+    else:
+        peint = PEINT.from_pretrained_esm2(
+            embed_dim=net.embed_dim,
+            num_heads=net.num_heads,
+            num_encoder_layers=net.num_encoder_layers,
+            num_decoder_layers=net.num_decoder_layers,
+            max_len=net.max_len,
+            dropout_p=net.dropout_p,
+            use_attention_bias=net.use_bias,
+            finetune_esm=net.finetune_esm,
+        )
+        module = PEINTModule.load_from_checkpoint(checkpoint_path, net=peint, strict=False)
+
+    del sys.modules["plmr"]
+    return module.to(device).eval()

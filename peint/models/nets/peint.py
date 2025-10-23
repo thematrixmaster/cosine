@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from esm.model.esm2 import ESM2
 from esm.modules import RobertaLMHead
 from torch import Tensor
+from tqdm import tqdm
 
 from evo.tokenization import CodonVocab, Vocab
 from peint.models.frameworks.peint import sampling_function
@@ -546,7 +547,7 @@ class PEINTGenerator(PEINT):
 
         # Limit max_decode_steps to account for both start and stop tokens
         max_context_len = self.max_len - (self.vocab.prepend_bos + self.vocab.append_eos)
-        max_decode_steps = min(max_decode_steps, max_context_len)
+        max_decode_steps = min(max_decode_steps or np.inf, max_context_len)
 
         for dec_layer in self.dec_layers:
             dec_layer.self_attn.init_kv_cache(batch_size, max_decode_steps)
@@ -562,7 +563,7 @@ class PEINTGenerator(PEINT):
             x=xs, y=y_decoded, t=ts, x_sizes=x_sizes, y_sizes=y_sizes, chain_ids=chain_ids
         )
 
-        for _ in range(max_decode_steps - 1):
+        for _ in tqdm(range(max_decode_steps - 1)):
             logits = logits[:, -1, :] / temperature
 
             if no_special_toks:
