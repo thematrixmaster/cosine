@@ -1,8 +1,10 @@
+import pickle
 import warnings
 from importlib.util import find_spec
 from typing import Any, Callable, Dict, Optional, Tuple
 
 import torch
+import torch.nn as nn
 from omegaconf import DictConfig
 
 from peint.utils import pylogger, rich_utils
@@ -132,3 +134,17 @@ def catch_naninf(x: torch.Tensor):
             f"Values: {x}\n"
             "This might be caused by a bug in the model or an invalid input."
         )
+
+
+def can_pickle_net(net: nn.Module):
+    # Test if net is picklable
+    try:
+        pickle.dumps(net)
+    except Exception as e:
+        # Find which attribute is the problem
+        for name, module in net.named_modules():
+            try:
+                pickle.dumps(module)
+            except Exception as e:
+                print(f"❌ {name}: {e}")
+        raise ValueError(f"Net is not picklable! {e}")

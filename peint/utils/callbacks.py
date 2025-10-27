@@ -8,11 +8,13 @@ import lightning as pl
 import numpy as np
 import torch
 import wandb
-from evo.phylogeny import VALID_BINS, get_quantile_idx
 from lightning.pytorch.callbacks import Callback
+from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.utilities.exceptions import MisconfigurationException
 from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from lightning.pytorch.utilities.types import STEP_OUTPUT
+
+from evo.phylogeny import VALID_BINS, get_quantile_idx
 
 
 def gradient_norm(model):
@@ -77,7 +79,7 @@ class ValidationLikelihoodCallback(Callback):
         table = wandb.Table(data=data, columns=["Time", "Mean per-site Likelihood"])
 
         # important for multi-gpu runs, doesn't seem to affect single gpu runs
-        if trainer.global_rank == 0:
+        if trainer.global_rank == 0 and isinstance(trainer.logger, WandbLogger):
             trainer.logger.experiment.log(
                 {
                     "time_bin_likelihood": wandb.plot.scatter(
@@ -99,7 +101,8 @@ class GradNormCallback(Callback):
     """
 
     def on_before_optimizer_step(self, trainer, pl_module, optimizer):
-        trainer.logger.experiment.log({"my_model/grad_norm": gradient_norm(pl_module)})
+        if isinstance(trainer.logger, WandbLogger):
+            trainer.logger.experiment.log({"my_model/grad_norm": gradient_norm(pl_module)})
 
 
 class EMA(Callback):

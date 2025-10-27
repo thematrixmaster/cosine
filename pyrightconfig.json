@@ -1,0 +1,15 @@
+{
+    "exclude": [
+        "**/node_modules",
+        "**/__pycache__",
+        ".git",
+        ".claude",
+        ".venv",
+        ".pytest_cache",
+        "data",
+        "configs",
+        "docs",
+        "logs"
+    ],
+    "typeCheckingMode": "off"
+}

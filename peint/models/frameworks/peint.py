@@ -1,6 +1,4 @@
-import os
 import random
-import sys
 from collections import deque
 from itertools import product
 from typing import Callable, List
@@ -11,98 +9,9 @@ from ete3 import Tree
 
 from evo.sequence import _FASTA_VOCAB
 from evo.tokenization import Vocab
-from peint.models.modules.peint_module import PEINTModule
-from peint.models.nets.peint import PEINT, ESMEncoder
 
 
-def load_from_old_checkpoint(checkpoint_path: str, device: str = "cpu") -> PEINTModule:
-    """
-    Load a PEINTModule from an old checkpoint format.
-    """
-    if not os.path.exists(checkpoint_path):
-        raise FileNotFoundError(f"Checkpoint file {checkpoint_path} does not exist.")
-
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    hyperparams = checkpoint.get("hyper_parameters", {})
-
-    enc_model = ESMEncoder.from_pretrained(
-        dropout_p=hyperparams.get("dropout_p", 0.0),
-        finetune=False,
-        embed_x_per_chain=False,
-    )
-    peint = PEINT(
-        enc_model=enc_model,
-        evo_vocab=enc_model.vocab,
-        num_chains=1,
-        causal_decoder=True,
-        use_chain_embedding=False,
-        num_heads=hyperparams["num_heads"],
-        embed_dim=hyperparams["embed_dim"],
-        max_len=hyperparams["max_seq_len"],
-        num_encoder_layers=hyperparams["num_encoder_layers"],
-        num_decoder_layers=hyperparams["num_decoder_layers"],
-        dropout_p=hyperparams.get("dropout_p", 0.0),
-        use_attention_bias=hyperparams.get("use_attention_bias", True),
-    )
-
-    module = PEINTModule(
-        net=peint,
-        weight_decay=hyperparams.get("weight_decay", 0.0),
-        compile=hyperparams.get("compile", False),
-    )
-
-    state_dict = {}
-    for k, v in checkpoint["state_dict"].items():
-        if k.startswith("model.esm"):
-            continue
-        assert k.startswith("model.")
-        state_dict[k.replace("model.", "net.")] = v
-
-    missing_keys, unexpected_keys = module.load_state_dict(state_dict=state_dict)
-    assert all(k.startswith("net.esm") for k in missing_keys)
-    assert len(unexpected_keys) == 0
-
-    return module.to(device).eval()
-
-
-def load_from_new_checkpoint(checkpoint_path: str, device: str = "cpu") -> PEINTModule:
-    """
-    Load a PEINTModule from a checkpoint that contains the PEINT model.
-    """
-    if not os.path.exists(checkpoint_path):
-        raise FileNotFoundError(f"Checkpoint file {checkpoint_path} does not exist.")
-
-    import peint
-
-    sys.modules["plmr"] = peint
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    hyperparams = checkpoint.get("hyper_parameters", {})
-    net = hyperparams.get("net")
-
-    _net_type = type(net).__name__
-    if _net_type != "PEINT":
-        raise ValueError("Checkpoint does not contain a valid PEINT model.")
-
-    if net.finetune_esm:
-        module = PEINTModule.load_from_checkpoint(checkpoint_path=checkpoint_path, strict=True)
-    else:
-        peint = PEINT.from_pretrained_esm2(
-            embed_dim=net.embed_dim,
-            num_heads=net.num_heads,
-            num_encoder_layers=net.num_encoder_layers,
-            num_decoder_layers=net.num_decoder_layers,
-            max_len=net.max_len,
-            dropout_p=net.dropout_p,
-            use_attention_bias=net.use_bias,
-            finetune_esm=net.finetune_esm,
-        )
-        module = PEINTModule.load_from_checkpoint(checkpoint_path, net=peint, strict=False)
-
-    del sys.modules["plmr"]
-    return module.to(device).eval()
-
-
-def sampling_function(logits: torch.Tensor, p=0.9, argmax_sample=False):
+def sampling_function(logits, p=0.9, argmax_sample=False):
     """
     Perform top p sampling on the given logits.
 
@@ -113,8 +22,7 @@ def sampling_function(logits: torch.Tensor, p=0.9, argmax_sample=False):
     Returns:
     torch.Tensor: Sampled token indices of shape [batch_size, 1]
     """
-
-    probs = nn.functional.softmax(logits, dim=-1)
+    probs = torch.nn.functional.softmax(logits, dim=-1)
 
     if argmax_sample or p == 0.0:
         return probs.argmax(-1, keepdim=True)
@@ -165,7 +73,7 @@ def filter_sequences(
 
 
 def simulate_evolution_with_rejection_sampling(
-    model: PEINTModule,
+    model,
     root_sequence: str,
     tree: Tree,
     vocab: Vocab,

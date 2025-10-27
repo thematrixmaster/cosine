@@ -27,6 +27,7 @@ class PLMRLitModule(LightningModule, ABC):
         self.save_hyperparameters(logger=False, ignore=ignore)
 
         self.net = net
+        # can_pickle_net(net) # ensure that the net module is pickleable
 
         # for averaging loss across batches
         self.train_loss = MeanMetric()

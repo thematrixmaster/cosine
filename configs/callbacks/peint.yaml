@@ -1,0 +1,5 @@
+defaults:
+  - default  # includes model_checkpoint, early_stopping, etc.
+  - grad_norm
+  - val_likelihood
+  - _self_
