@@ -1,0 +1,92 @@
+# @package _global_
+
+# to execute this experiment run:
+# python experiments/train_model.py experiment=train_vae
+
+defaults:
+  - override /data: plmr
+  - override /data/dataset: none
+  - override /data/dataset@data.dataset_train: lept
+  - override /data/dataset@data.dataset_val: lept
+  - override /vocab: esm
+  - override /callbacks: default
+  - override /metrics: none
+  - override /model: protein_vae
+  - override /net: protein_vae
+  - override /trainer: gpu
+  - override /logger: csv
+
+# all parameters below will be merged with parameters from default configurations set above
+# this allows you to overwrite only specified parameters
+
+tags: ["vae", "protein_vae", "lept"]
+
+seed: 12345
+
+trainer:
+  max_epochs: null
+  max_steps: 100000
+  val_check_interval: 5000
+  accumulate_grad_batches: 1
+  check_val_every_n_epoch: null
+  gradient_clip_val: 1.0
+  log_every_n_steps: 10
+  precision: bf16
+
+callbacks:
+  model_checkpoint:
+    monitor: val/loss
+    mode: min
+    every_n_train_steps: 5000
+    save_top_k: 1
+  lr_monitor:
+    logging_interval: step
+  early_stopping:
+    monitor: val/loss
+    mode: min
+    patience: 20
+
+vocab:
+  alphabet:
+    name: ESM-1b
+
+model:
+  compile: false
+  weight_decay: 0.01
+  optimizer:
+    lr: 0.0001
+  scheduler:
+    num_warmup_steps: 2000
+    num_training_steps: 100000
+  kl_anneal_steps: 10000
+  beta_max: 1.0
+
+net:
+  latent_dim: 128
+  encoder_num_adaptive_layers: 3
+  decoder_num_layers: 6
+  decoder_num_heads: 8
+  max_len: 1024
+  esm_encoder:
+    finetune: false
+    embed_x_per_chain: false
+    ckpt_path: null
+
+data:
+  shuffle: true
+  num_workers: 4
+  batch_size: 32
+  train_val_split: [0.95, 0.05]
+  dataset_train:
+    swap_prob: 0.5
+    sep_token: .
+  dataset_val:
+    swap_prob: 0.0
+    sep_token: .
+
+logger:
+  wandb:
+    tags: ${tags}
+    project: peint-vae
+
+ckpt_path: null
