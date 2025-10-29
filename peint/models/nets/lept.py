@@ -187,6 +187,7 @@ class ProteinVAE(nn.Module):
         device = z.device
 
         x = torch.full((bsz, 1), self.vocab.bos_idx, dtype=torch.long, device=device)
+        eos_reached = torch.zeros(bsz, dtype=torch.bool, device=device)
 
         for _ in range(max_len - 1):
             attn_mask = torch.ones_like(x)
@@ -197,7 +198,10 @@ class ProteinVAE(nn.Module):
 
             x = torch.cat([x, next_token], dim=1)
 
-            if (next_token == self.vocab.eos_idx).all():
+            is_eos_token = next_token.squeeze(1) == self.vocab.eos_idx
+            eos_reached = eos_reached | is_eos_token
+
+            if eos_reached.all():
                 break
 
         return x
