@@ -94,7 +94,7 @@ class LEPTModule(PLMRLitModule):
         with torch.no_grad():
             Z_x = self.net.encode(x, x_sizes)
             Z_y = self.net.encode(y, y_sizes)
-            Z_y_hat = self.net.exp(Z_x, t, num_steps=self.net.num_steps)
+            Z_y_hat = self.net.exp(Z_x, t=t)
             y_attn_mask = (y != self.net.vocab.pad_idx).long()
             logits = self.net.decoder(y[:, :-1], Z_y_hat, y_attn_mask[:, :-1])
 

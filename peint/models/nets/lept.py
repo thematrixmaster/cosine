@@ -268,7 +268,7 @@ class LEPT(NeuralGeodesicFlows):
         Z_y = self.encode(y, y_sizes)
 
         # Apply the geodesic exp map to simulate Z_x over time t
-        Z_y_hat = self.exp(Z_x, t, num_steps=self.num_steps)
+        Z_y_hat = self.exp(Z_x, t)
 
         # Calculate cross-entropy loss between decoded sequences from Z_y_hat and target y
         y_attn_mask = (y != self.vocab.pad_idx).long()
@@ -317,8 +317,8 @@ class LEPT(NeuralGeodesicFlows):
         return mu
 
     @torch.no_grad()
-    def evolve(self, z: Tensor, t: Tensor, num_steps: int) -> Tensor:
-        return self.exp(z, t, num_steps=num_steps)
+    def evolve(self, z: Tensor, t: Tensor) -> Tensor:
+        return self.exp(z, t)
 
     @torch.no_grad()
     def decode(self, z: Tensor, max_len: int, temperature: float = 1.0) -> Tensor:

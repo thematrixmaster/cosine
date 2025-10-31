@@ -16,6 +16,12 @@ def RK4_step(z: Tensor, dt: Tensor, ODE_f: Callable[[Tensor], Tensor]) -> Tensor
     k2 = ODE_f(z + 0.5 * dt * k1)
     k3 = ODE_f(z + 0.5 * dt * k2)
     k4 = ODE_f(z + dt * k3)
+
+    # Check for NaNs during integration
+    for k in [k1, k2, k3, k4]:
+        if torch.isnan(k).any() or torch.isinf(k).any():
+            return z + dt * k1  # Fallback to Euler step
+
     z = z + dt / 6.0 * (k1 + 2 * k2 + 2 * k3 + k4)
     return z
 
@@ -55,6 +61,9 @@ class NeuralGeodesicFlows(ABC, nn.Module):
         g = self.metric(x)  # shape (bs, m, m) - compute once!
         inverse_g = torch.linalg.inv(g.float()).to(x.dtype)  # reuse g
 
+        if partial_g.dim() == 3:
+            partial_g = partial_g.unsqueeze(0)  # (1, m, m, m)
+
         # Formula: Gamma^k_ab = 1/2 g^ki (partial_a g_ib + partial_b g_ai - partial_i g_ab)
         term1 = torch.einsum("Bki,Baib->Bkab", inverse_g, partial_g)
         term2 = torch.einsum("Bki,Bbai->Bkab", inverse_g, partial_g)
@@ -79,19 +88,35 @@ class NeuralGeodesicFlows(ABC, nn.Module):
 
         return torch.cat([dxbydt, dvbydt], dim=1)  # shape (bs, 2*m)
 
-    def exp(self, z: Tensor, t: Tensor, num_steps: int) -> Tensor:
+    def exp(self, z: Tensor, t: Tensor, dt: float = 0.1) -> Tensor:
         """
-        Geodesic exponential map.
-        Starting at z=(x_initial, v_initial) in TM, return exp(x_initial, v_initial, t_final)
-        i.e., the point c(t_final) on the unique geodesic c(t) with c(0)=x_initial, dc/dt(0)=v_initial
+        Geodesic exponential map with variable num_steps per batch element.
+        Only computes integration for elements that haven't finished.
         """
-        dt = t / num_steps
+        num_steps = torch.clamp((t.abs() / dt).ceil().long(), min=5, max=150).squeeze()
+        dt_steps = t / num_steps.unsqueeze(-1) if num_steps.dim() == 1 else t / num_steps
+        max_steps = num_steps.max().item()
+        result = z
 
-        # Integration loop (replaces jax.lax.scan)
-        for _ in range(num_steps):
-            z = RK4_step(z, dt, self.geodesic_ODE_function)
+        for step in range(max_steps):
+            active = step < num_steps
 
-        return z
+            if not active.any():
+                break
+
+            # Compute RK4 step only for active elements
+            z_new = RK4_step(
+                result[active], dt_steps[active], self.geodesic_ODE_function
+            )  # (num_active, 2*m)
+
+            if active.all():
+                result = z_new
+            else:
+                result_new = result.clone()
+                result_new[active] = z_new
+                result = result_new
+
+        return result
 
     @abstractmethod
     def recon_loss(
