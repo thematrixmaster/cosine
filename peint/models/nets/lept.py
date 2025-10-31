@@ -1,9 +1,12 @@
+from typing import List
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
 from evo.tokenization import Vocab
+from peint.models.frameworks.nde import NeuralGeodesicFlows
 from peint.models.nets.peint import ESMEncoder
 
 
@@ -21,6 +24,10 @@ class AttentionPooling(nn.Module):
 
 
 class SequenceEncoder(nn.Module):
+    """
+    Transformer-based encoder for protein sequences embeddings (L,d_enc) to latent vectors (h)
+    """
+
     def __init__(self, esm_embed_dim: int, latent_dim: int, num_adaptive_layers: int = 3):
         super().__init__()
         encoder_layer = nn.TransformerEncoderLayer(
@@ -47,6 +54,10 @@ class SequenceEncoder(nn.Module):
 
 
 class SequenceDecoder(nn.Module):
+    """
+    Transformer-based decoder for protein sequences conditioned on latent vectors
+    """
+
     def __init__(
         self,
         embedding: nn.Module,
@@ -98,7 +109,45 @@ class SequenceDecoder(nn.Module):
         return logits
 
 
-class ProteinVAE(nn.Module):
+class GeodesicMetric(nn.Module):
+    """
+    Learns an hxh positive definite matrix for computing the geodesic metric in the latent space
+    """
+
+    def __init__(self, M_dim: int, hidden_dims: List[int]):
+        super().__init__()
+        self.M_dim = M_dim
+
+        # Build layers: input -> hidden layers -> lower triangular output
+        layer_sizes = [M_dim] + hidden_dims + [M_dim * (M_dim + 1) // 2]
+        self.layers = nn.ModuleList(
+            [nn.Linear(layer_sizes[i], layer_sizes[i + 1]) for i in range(len(layer_sizes) - 1)]
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Hidden layers with tanh activation
+        for layer in self.layers[:-1]:
+            x = torch.tanh(layer(x))
+
+        # Output layer with tanh
+        learnt_components = torch.tanh(self.layers[-1](x))
+
+        # Populate lower triangular matrix L
+        L = torch.zeros(self.M_dim, self.M_dim, device=x.device, dtype=x.dtype)
+        tril_indices = torch.tril_indices(self.M_dim, self.M_dim, device=x.device)
+        L[tril_indices[0], tril_indices[1]] = learnt_components
+
+        # Enforce positive diagonal entries with softplus
+        diag_indices = torch.arange(self.M_dim, device=x.device)
+        L[diag_indices, diag_indices] = nn.functional.softplus(L.diag())
+
+        # Compute g = I + LL^T (guaranteed symmetric positive definite)
+        g = torch.eye(self.M_dim, device=x.device, dtype=x.dtype) + L @ L.T
+
+        return g
+
+
+class LEPT(NeuralGeodesicFlows):
     def __init__(
         self,
         esm_encoder: ESMEncoder,
@@ -107,20 +156,27 @@ class ProteinVAE(nn.Module):
         encoder_num_adaptive_layers: int = 3,
         decoder_num_layers: int = 6,
         decoder_num_heads: int = 8,
+        num_steps: int = 100,
         max_len: int = 1024,
+        is_vae: bool = True,
+        *args,
+        **kwargs,
     ):
-        super().__init__()
+        super().__init__(latent_dim=latent_dim, *args, **kwargs)
         self.vocab = vocab
         self.latent_dim = latent_dim
         self.esm_encoder = esm_encoder
-
-        self.encoder = SequenceEncoder(
-            esm_encoder.embed_dim(), latent_dim, encoder_num_adaptive_layers
-        )
+        self.num_steps = num_steps
+        self.is_vae = is_vae
 
         in_embedding = esm_encoder.get_in_embedding()
         out_lm_head = esm_encoder.get_out_lm_head()
 
+        self.encoder = SequenceEncoder(
+            esm_encoder.embed_dim(),
+            latent_dim,
+            encoder_num_adaptive_layers,
+        )
         self.decoder = SequenceDecoder(
             embedding=in_embedding,
             lm_head=out_lm_head,
@@ -129,6 +185,10 @@ class ProteinVAE(nn.Module):
             num_layers=decoder_num_layers,
             num_heads=decoder_num_heads,
             max_len=max_len,
+        )
+        self.metric = GeodesicMetric(
+            M_dim=latent_dim // 2,
+            hidden_dims=[256, 256],
         )
 
     def reparameterize(self, mu: Tensor, logvar: Tensor) -> Tensor:
@@ -141,7 +201,11 @@ class ProteinVAE(nn.Module):
 
         h = self.esm_encoder(x, x_sizes)
         mu, logvar = self.encoder(h, attn_mask)
-        z = self.reparameterize(mu, logvar)
+
+        if self.is_vae:
+            z = self.reparameterize(mu, logvar)
+        else:
+            z = mu
 
         x_dec = x[:, :-1]
         attn_mask_dec = attn_mask[:, :-1]
@@ -149,13 +213,16 @@ class ProteinVAE(nn.Module):
 
         return {"logits": logits, "mu": mu, "logvar": logvar, "z": z}
 
-    def loss(self, x: Tensor, x_sizes: Tensor, beta: float = 1.0) -> dict[str, Tensor]:
-        outputs = self.forward(x, x_sizes)
-        logits = outputs["logits"]
-        mu = outputs["mu"]
-        logvar = outputs["logvar"]
+    def recon_loss(self, x, y, x_sizes, y_sizes, calc_acc=False, **kwargs):
+        x_outputs = self.forward(x, x_sizes)
+        y_outputs = self.forward(y, y_sizes)
 
-        target = x[:, 1:]
+        # combine outputs for both x and y (treat them identically)
+        outputs = {k: torch.cat([x_outputs[k], y_outputs[k]], dim=0) for k in x_outputs}
+        logits, mu, logvar = outputs["logits"], outputs["mu"], outputs["logvar"]
+
+        # combine the targets for both x and y as well
+        target = torch.cat([x[:, 1:], y[:, 1:]], dim=0)
 
         recon_loss = F.cross_entropy(
             logits.transpose(1, 2),
@@ -163,16 +230,69 @@ class ProteinVAE(nn.Module):
             ignore_index=self.vocab.pad_idx,
             reduction="mean",
         )
+        loss = recon_loss
+        loss_info = dict(recon_loss=recon_loss)
 
-        kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+        if self.is_vae:
+            kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+            beta = kwargs.get("beta", 1.0)
+            loss_info["kl_loss"] = kl_loss
+            loss += beta * kl_loss
 
-        loss = recon_loss + beta * kl_loss
+        if calc_acc:
+            padding_mask = target != self.vocab.pad_idx
+            acc = (logits.argmax(-1)[padding_mask] == target[padding_mask]).float().mean().item()
+            loss_info["acc"] = acc
 
-        return {
-            "loss": loss,
-            "recon_loss": recon_loss,
-            "kl_loss": kl_loss,
-        }
+        loss_info["loss"] = loss
+        return loss_info
+
+    def trans_loss(self, x, y, x_sizes, y_sizes, t, **kwargs):
+        # Encode input sequences to latent space
+        Z_x = self.encode(x, x_sizes)
+        Z_y = self.encode(y, y_sizes)
+
+        # Apply the geodesic exp map to simulate Z_x over time t
+        Z_y_hat = self.exp(Z_x, t, num_steps=self.num_steps)
+
+        # Calculate cross-entropy loss between decoded sequences from Z_y_hat and target y
+        y_attn_mask = (y != self.vocab.pad_idx).long()
+        logits = self.decoder(y[:, :-1], Z_y_hat, y_attn_mask[:, :-1])
+
+        trans_lat_loss = F.mse_loss(  # latent space transition loss
+            input=Z_y_hat,
+            target=Z_y,
+            reduction="mean",
+        )
+        trans_dec_loss = F.cross_entropy(  # decoded space transition loss
+            logits.transpose(1, 2),
+            y[:, 1:],
+            ignore_index=self.vocab.pad_idx,
+            reduction="mean",
+        )
+        loss = trans_lat_loss + trans_dec_loss
+        return dict(loss=loss, trans_lat_loss=trans_lat_loss, trans_dec_loss=trans_dec_loss)
+
+    def loss(self, x, y, x_sizes, y_sizes, t, beta, **kwargs):
+        recon_loss_dict = self.recon_loss(
+            x=x,
+            y=y,
+            x_sizes=x_sizes,
+            y_sizes=y_sizes,
+            beta=beta,
+            **kwargs,
+        )
+        trans_loss_dict = self.trans_loss(
+            x=x,
+            y=y,
+            x_sizes=x_sizes,
+            y_sizes=y_sizes,
+            t=t,
+            **kwargs,
+        )
+        loss = recon_loss_dict["loss"] + trans_loss_dict["loss"]
+        loss_info = {**recon_loss_dict, **trans_loss_dict, "loss": loss}
+        return loss_info
 
     @torch.no_grad()
     def encode(self, x: Tensor, x_sizes: Tensor) -> Tensor:
@@ -180,6 +300,10 @@ class ProteinVAE(nn.Module):
         h = self.esm_encoder(x, x_sizes)
         mu, _ = self.encoder(h, attn_mask)
         return mu
+
+    @torch.no_grad()
+    def evolve(self, z: Tensor, t: Tensor, num_steps: int) -> Tensor:
+        return self.exp(z, t, num_steps=num_steps)
 
     @torch.no_grad()
     def decode(self, z: Tensor, max_len: int, temperature: float = 1.0) -> Tensor:

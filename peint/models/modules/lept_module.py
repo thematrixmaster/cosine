@@ -6,13 +6,15 @@ import torch.nn.functional as F
 from transformers.optimization import get_polynomial_decay_schedule_with_warmup
 
 from peint.models.modules.plmr_module import PLMRLitModule
-from peint.models.nets.lept import ProteinVAE
+from peint.models.nets.lept import LEPT
 
 
-class ProteinVAEModule(PLMRLitModule):
+class LEPTModule(PLMRLitModule):
+    net: LEPT
+
     def __init__(
         self,
-        net: ProteinVAE,
+        net: LEPT,
         weight_decay: float = 0.01,
         optimizer: torch.optim.Optimizer = partial(torch.optim.AdamW, lr=1e-4),
         scheduler: torch.optim.lr_scheduler = partial(
@@ -54,56 +56,78 @@ class ProteinVAEModule(PLMRLitModule):
 
         beta = self.get_beta()
 
-        loss_dict = self.net.loss(x=x, x_sizes=x_sizes, beta=beta)
+        loss_dict = self.net.loss(x=x, y=y, x_sizes=x_sizes, y_sizes=y_sizes, t=t, beta=beta)
 
         loss = loss_dict["loss"]
-        recon_loss = loss_dict["recon_loss"]
-        kl_loss = loss_dict["kl_loss"]
 
+        recon_loss = loss_dict["recon_loss"]
         recon_ppl = torch.exp(recon_loss.detach())
 
+        trans_loss = loss_dict["trans_dec_loss"]
+        trans_ppl = torch.exp(trans_loss.detach())
+
+        loss_dict.pop("loss", None)
         metrics = {
-            "recon_loss": recon_loss,
-            "kl_loss": kl_loss,
+            **loss_dict,
             "recon_ppl": recon_ppl,
+            "trans_ppl": trans_ppl,
             "beta": beta,
         }
         return loss, metrics
 
     def validation_step(self, batch, batch_idx: int, dataloader_idx: int = 0):
         x, y, t, x_sizes, y_sizes = batch
-
         beta = self.beta_max
 
+        # reconstruction objective
         with torch.no_grad():
-            outputs = self.net(x=x, x_sizes=x_sizes)
+            recon_loss_dict = self.net.recon_loss(
+                self, x, y, x_sizes, y_sizes, beta=beta, calc_acc=True
+            )
 
-        logits = outputs["logits"]
-        mu = outputs["mu"]
-        logvar = outputs["logvar"]
-
-        target = x[:, 1:]
-
-        recon_loss = F.cross_entropy(
-            logits.transpose(1, 2),
-            target,
-            ignore_index=self.net.vocab.pad_idx,
-            reduction="mean",
-        )
-
-        kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
-        loss = recon_loss + beta * kl_loss
-
+        recon_loss = recon_loss_dict["recon_loss"]
         recon_ppl = torch.exp(recon_loss.detach())
 
-        padding_mask = target != self.net.vocab.pad_idx
-        acc = (logits.argmax(-1)[padding_mask] == target[padding_mask]).float().mean().item()
+        # transition objective
+        with torch.no_grad():
+            Z_x = self.net.encode(x, x_sizes)
+            Z_y = self.net.encode(y, y_sizes)
+            Z_y_hat = self.net.exp(Z_x, t, num_steps=self.net.num_steps)
+            y_attn_mask = (y != self.net.vocab.pad_idx).long()
+            logits = self.net.decoder(y[:, :-1], Z_y_hat, y_attn_mask[:, :-1])
+
+        trans_lat_loss = F.mse_loss(input=Z_y_hat, target=Z_y, reduction="none")  # (bs,)
+        trans_dec_loss = F.cross_entropy(
+            logits.transpose(1, 2),
+            y[:, 1:],
+            ignore_index=self.net.vocab.pad_idx,
+            reduction="none",
+        )  # (bs, seq_len-1)
+
+        # stratify loss by time t into bins
+        y_tgt_attn_mask = y_attn_mask[:, :-1].bool()
+        tbins = t.expand_as(y[:, :-1])[y_tgt_attn_mask]
+        trans_ll = -trans_dec_loss[y_tgt_attn_mask]
+        trans_ll_per_bin = {b.item(): trans_ll[tbins == b].cpu().numpy() for b in t}
+        trans_mse_per_bin = {b.item(): trans_lat_loss[t == b].cpu().numpy() for b in t}
+
+        # aggregate losses and metrics
+        trans_lat_loss = trans_lat_loss.mean()
+        trans_dec_loss = trans_dec_loss[y_tgt_attn_mask].mean()
+        loss = recon_loss + trans_lat_loss + trans_dec_loss
+        trans_ppl = torch.exp(trans_dec_loss.detach())
+        trans_acc = (
+            (logits.argmax(-1)[y_tgt_attn_mask] == y[:, 1:][y_tgt_attn_mask]).float().mean().item()
+        )
 
         loss_info = {
-            "recon_loss": recon_loss,
-            "kl_loss": kl_loss,
+            **recon_loss_dict.items(),
+            "trans_lat_loss": trans_lat_loss.detach().item(),
+            "trans_dec_loss": trans_dec_loss.detach().item(),
             "recon_ppl": recon_ppl,
-            "acc": acc,
+            "trans_ppl": trans_ppl,
+            "trans_acc": trans_acc,
+            "beta": beta,
         }
 
         self.val_loss(loss)
