@@ -432,7 +432,7 @@ class RopeFlashMHA(nn.Module):
             base=10000.0,
             interleaved=False,
             scale_base=None,
-            pos_idx_in_fp32=True,  # very important for bf16
+            # pos_idx_in_fp32=True,  # very important for bf16
         )
 
     def forward(
@@ -915,7 +915,7 @@ class KVCached_MHSA(nn.Module):
             base=10000.0,
             interleaved=False,
             scale_base=None,
-            pos_idx_in_fp32=True,
+            # pos_idx_in_fp32=True,
         )
 
         self.kv_cache = None

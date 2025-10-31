@@ -22,6 +22,7 @@ class EncodedLEPTDataset(TorchWrapperDataset):
 
     def __getitem__(self, index: int):
         xs, ys, ts, _ = super().__getitem__(index)
+        ts = ts[0]  # Only use single time value
 
         # Random swap between parent (xs) and child (ys)
         if np.random.rand() < self.swap_prob:

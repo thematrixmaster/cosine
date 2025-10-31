@@ -1,11 +1,15 @@
+from collections import defaultdict
 from functools import partial
 from typing import List
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from transformers.optimization import get_polynomial_decay_schedule_with_warmup
 
+from evo.phylogeny import VALID_BINS, get_quantile_idx
 from peint.models.modules.plmr_module import PLMRLitModule
+from peint.models.modules.utils import log_wandb_scatter
 from peint.models.nets.lept import LEPT
 
 
@@ -81,9 +85,7 @@ class LEPTModule(PLMRLitModule):
 
         # reconstruction objective
         with torch.no_grad():
-            recon_loss_dict = self.net.recon_loss(
-                self, x, y, x_sizes, y_sizes, beta=beta, calc_acc=True
-            )
+            recon_loss_dict = self.net.recon_loss(x, y, x_sizes, y_sizes, calc_acc=True, beta=beta)
 
         recon_loss = recon_loss_dict["recon_loss"]
         recon_ppl = torch.exp(recon_loss.detach())
@@ -96,7 +98,10 @@ class LEPTModule(PLMRLitModule):
             y_attn_mask = (y != self.net.vocab.pad_idx).long()
             logits = self.net.decoder(y[:, :-1], Z_y_hat, y_attn_mask[:, :-1])
 
-        trans_lat_loss = F.mse_loss(input=Z_y_hat, target=Z_y, reduction="none")  # (bs,)
+        trans_l2_dist = torch.norm(Z_y_hat - Z_y, dim=-1, p=2).unsqueeze(1)  # (bs,1)
+        trans_lat_loss = F.mse_loss(input=Z_y_hat, target=Z_y, reduction="none").mean(
+            -1, keepdim=True
+        )  # (bs,1)
         trans_dec_loss = F.cross_entropy(
             logits.transpose(1, 2),
             y[:, 1:],
@@ -108,8 +113,12 @@ class LEPTModule(PLMRLitModule):
         y_tgt_attn_mask = y_attn_mask[:, :-1].bool()
         tbins = t.expand_as(y[:, :-1])[y_tgt_attn_mask]
         trans_ll = -trans_dec_loss[y_tgt_attn_mask]
-        trans_ll_per_bin = {b.item(): trans_ll[tbins == b].cpu().numpy() for b in t}
-        trans_mse_per_bin = {b.item(): trans_lat_loss[t == b].cpu().numpy() for b in t}
+
+        for idx, b in enumerate(t):
+            k = get_quantile_idx(VALID_BINS, b.item())
+            self.trans_ll_per_bin[k].extend(trans_ll[tbins == b].cpu().numpy())
+            self.trans_mse_per_bin[k].extend(trans_lat_loss[idx].cpu().numpy())
+            self.trans_l2_per_bin[k].extend(trans_l2_dist[idx].cpu().numpy())
 
         # aggregate losses and metrics
         trans_lat_loss = trans_lat_loss.mean()
@@ -120,8 +129,9 @@ class LEPTModule(PLMRLitModule):
             (logits.argmax(-1)[y_tgt_attn_mask] == y[:, 1:][y_tgt_attn_mask]).float().mean().item()
         )
 
+        recon_loss_dict.pop("loss", None)
         loss_info = {
-            **recon_loss_dict.items(),
+            **recon_loss_dict,
             "trans_lat_loss": trans_lat_loss.detach().item(),
             "trans_dec_loss": trans_dec_loss.detach().item(),
             "recon_ppl": recon_ppl,
@@ -137,6 +147,42 @@ class LEPTModule(PLMRLitModule):
             self.log(f"val/{k}", v, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
         return {"loss": loss, **loss_info}
+
+    def on_validation_epoch_start(self, *args, **kwargs):
+        super().on_validation_epoch_start(*args, **kwargs)
+        self.trans_ll_per_bin = defaultdict(list)
+        self.trans_mse_per_bin = defaultdict(list)
+        self.trans_l2_per_bin = defaultdict(list)
+
+    def on_validation_epoch_end(self, *args, **kwargs):
+        super().on_validation_epoch_end(*args, **kwargs)
+        log_wandb_scatter(
+            self.trainer,
+            self.trans_ll_per_bin,
+            name="transition-ll",
+            xlabel="Time",
+            ylabel="Mean Transition Log-Likelihood",
+            title="Transition ll (in data space) per time bin",
+            transform_fn=lambda v: np.mean(v),
+        )
+        log_wandb_scatter(
+            self.trainer,
+            self.trans_mse_per_bin,
+            name="transition-mse",
+            xlabel="Time",
+            ylabel="Mean Transition MSE",
+            title="Transition MSE (in latent space) per time bin",
+            transform_fn=lambda v: np.mean(v),
+        )
+        log_wandb_scatter(
+            self.trainer,
+            self.trans_l2_per_bin,
+            name="transition-l2",
+            xlabel="Time",
+            ylabel="Mean Transition L2 Distance",
+            title="Transition L2 Distance (in latent space) per time bin",
+            transform_fn=lambda v: np.mean(v),
+        )
 
     def predict_step(self, batch, batch_idx):
         raise NotImplementedError("Predict step not implemented yet.")

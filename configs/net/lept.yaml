@@ -1,4 +1,4 @@
-_target_: peint.models.nets.lept.ProteinVAE
+_target_: peint.models.nets.lept.LEPT
 
 vocab: ${vocab}
 
@@ -12,4 +12,6 @@ latent_dim: 128
 encoder_num_adaptive_layers: 3
 decoder_num_layers: 6
 decoder_num_heads: 8
+num_steps: 10
 max_len: 1024
+is_vae: false

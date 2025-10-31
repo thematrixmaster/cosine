@@ -20,5 +20,5 @@ dataset:
       chain_id_offset: 1
 
 vocab: ${vocab}
-swap_prob: 0.5
+swap_prob: 0.0
 sep_token: .

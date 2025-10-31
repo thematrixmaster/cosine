@@ -114,9 +114,10 @@ class GeodesicMetric(nn.Module):
     Learns an hxh positive definite matrix for computing the geodesic metric in the latent space
     """
 
-    def __init__(self, M_dim: int, hidden_dims: List[int]):
+    def __init__(self, M_dim: int, hidden_dims: List[int], activation: str = "tanh"):
         super().__init__()
         self.M_dim = M_dim
+        self.activation = activation
 
         # Build layers: input -> hidden layers -> lower triangular output
         layer_sizes = [M_dim] + hidden_dims + [M_dim * (M_dim + 1) // 2]
@@ -124,25 +125,39 @@ class GeodesicMetric(nn.Module):
             [nn.Linear(layer_sizes[i], layer_sizes[i + 1]) for i in range(len(layer_sizes) - 1)]
         )
 
+    def activation_fn(self, x: torch.Tensor) -> torch.Tensor:
+        if self.activation == "tanh":
+            return torch.tanh(x)
+        elif self.activation == "relu":
+            return torch.relu(x)
+        else:
+            raise ValueError(f"Unsupported activation function: {self.activation}")
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        bs, _ = x.shape
+
         # Hidden layers with tanh activation
         for layer in self.layers[:-1]:
-            x = torch.tanh(layer(x))
+            x = self.activation_fn(layer(x))
 
         # Output layer with tanh
-        learnt_components = torch.tanh(self.layers[-1](x))
+        learnt_components = self.activation_fn(self.layers[-1](x))  # (bs, n_tril)
 
-        # Populate lower triangular matrix L
-        L = torch.zeros(self.M_dim, self.M_dim, device=x.device, dtype=x.dtype)
+        # Build lower triangular matrix L using scatter (out-of-place)
         tril_indices = torch.tril_indices(self.M_dim, self.M_dim, device=x.device)
-        L[tril_indices[0], tril_indices[1]] = learnt_components
+        flat_indices = (tril_indices[0] * self.M_dim + tril_indices[1]).unsqueeze(0).expand(bs, -1)
 
-        # Enforce positive diagonal entries with softplus
-        diag_indices = torch.arange(self.M_dim, device=x.device)
-        L[diag_indices, diag_indices] = nn.functional.softplus(L.diag())
+        L_flat = torch.zeros(bs, self.M_dim * self.M_dim, device=x.device, dtype=x.dtype)
+        L_flat = L_flat.scatter(1, flat_indices, learnt_components)
+        L = L_flat.reshape(bs, self.M_dim, self.M_dim)
+
+        # Apply softplus to diagonal (out-of-place)
+        diag_mask = torch.eye(self.M_dim, device=x.device, dtype=torch.bool)
+        L = torch.where(diag_mask, nn.functional.softplus(L), L)
 
         # Compute g = I + LL^T (guaranteed symmetric positive definite)
-        g = torch.eye(self.M_dim, device=x.device, dtype=x.dtype) + L @ L.T
+        I = torch.eye(self.M_dim, device=x.device, dtype=x.dtype).unsqueeze(0)
+        g = I + torch.bmm(L, L.transpose(1, 2))
 
         return g
 
@@ -173,7 +188,7 @@ class LEPT(NeuralGeodesicFlows):
         out_lm_head = esm_encoder.get_out_lm_head()
 
         self.encoder = SequenceEncoder(
-            esm_encoder.embed_dim(),
+            esm_encoder.embed_dim,
             latent_dim,
             encoder_num_adaptive_layers,
         )
@@ -181,7 +196,7 @@ class LEPT(NeuralGeodesicFlows):
             embedding=in_embedding,
             lm_head=out_lm_head,
             latent_dim=latent_dim,
-            embed_dim=esm_encoder.embed_dim(),
+            embed_dim=esm_encoder.embed_dim,
             num_layers=decoder_num_layers,
             num_heads=decoder_num_heads,
             max_len=max_len,
@@ -242,7 +257,7 @@ class LEPT(NeuralGeodesicFlows):
         if calc_acc:
             padding_mask = target != self.vocab.pad_idx
             acc = (logits.argmax(-1)[padding_mask] == target[padding_mask]).float().mean().item()
-            loss_info["acc"] = acc
+            loss_info["recon_acc"] = acc
 
         loss_info["loss"] = loss
         return loss_info

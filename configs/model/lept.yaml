@@ -1,4 +1,4 @@
-_target_: peint.models.modules.lept_module.ProteinVAEModule
+_target_: peint.models.modules.lept_module.LEPTModule
 
 net: ${net}
 weight_decay: 0.01
