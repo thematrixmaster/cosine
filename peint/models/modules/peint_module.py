@@ -1,15 +1,18 @@
 import os
 import sys
+from collections import defaultdict
 from functools import partial
-from typing import Dict, List
+from typing import List
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers.optimization import get_polynomial_decay_schedule_with_warmup
 
-from peint.metrics.api import Metric
+from evo.phylogeny import VALID_BINS, get_quantile_idx
 from peint.models.modules.plmr_module import PLMRLitModule
+from peint.models.modules.utils import log_wandb_scatter
 from peint.models.nets.peint import PEINT, ESMEncoder
 
 
@@ -28,8 +31,6 @@ class PEINTModule(PLMRLitModule):
             power=2.0,
         ),
         compile: bool = False,
-        val_metrics_every_n_epoch: int = 1,
-        metrics: Dict[str, Metric] = {},
         ignore: List[str] = [],
         *args,
         **kwargs,
@@ -43,7 +44,6 @@ class PEINTModule(PLMRLitModule):
             *args,
             **kwargs,
         )
-        self.metrics = metrics
 
     def forward(self, *args, **kwargs):
         """Forward method delegates to unified network interface"""
@@ -79,10 +79,6 @@ class PEINTModule(PLMRLitModule):
             "tlm_ppl": tlm_ppl,
         }
         return loss, metrics
-
-    def on_validation_epoch_start(self):
-        super().on_validation_epoch_start()
-        self.validation_step_outputs = [[] for _ in self.trainer.val_dataloaders]
 
     def validation_step(self, batch, batch_idx: int, dataloader_idx: int = 0):
         """Simplified validation step using unified network interface"""
@@ -138,8 +134,10 @@ class PEINTModule(PLMRLitModule):
 
         # get lls per time bin
         tbins = ts[:, :1].expand_as(y_tgt)[padding_mask]
-        mask_loss = -1 * clm_loss[padding_mask]
-        ll_per_bin = {b.item(): mask_loss[tbins == b].cpu().numpy() for b in ts[:, :1]}
+        ll_per_site = -1 * clm_loss[padding_mask]
+        for b in ts[:, 0]:
+            k = get_quantile_idx(VALID_BINS, b.item())
+            self.ll_per_bin[k].extend(ll_per_site[tbins == b].cpu().numpy())
 
         if "mlm_loss" in loss_info:
             loss = loss_info["mlm_loss"] + clm_loss_mean
@@ -162,19 +160,23 @@ class PEINTModule(PLMRLitModule):
         for k, v in loss_info.items():
             self.log(f"val/{k}", v, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
-        return {"loss": loss, **loss_info}, ll_per_bin
+        return {"loss": loss, **loss_info}
+
+    def on_validation_epoch_start(self):
+        super().on_validation_epoch_start()
+        self.ll_per_bin = defaultdict(list)
 
     def on_validation_epoch_end(self, *args, **kwargs) -> None:
         super().on_validation_epoch_end(*args, **kwargs)
-        if (
-            not self.trainer.sanity_checking
-            and (self.current_epoch % self.hparams.val_metrics_every_n_epoch) == 0
-        ):
-            for _, metric in self.metrics.items():
-                _metrics = metric.compute(self.validation_step_outputs)
-                _metrics = metric.aggregate(_metrics)
-                for key, value in _metrics.items():
-                    self.log(f"val/{metric.name}/{key}", value, sync_dist=True, prog_bar=True)
+        log_wandb_scatter(
+            self.trainer,
+            self.ll_per_bin,
+            name="ll-per-bin",
+            xlabel="Time",
+            ylabel="Mean Log-Likelihood",
+            title="LL per time bin",
+            transform_fn=lambda v: np.mean(v),
+        )
 
     def predict_step(self, batch, batch_idx):
         raise NotImplementedError("Predict step not implemented yet.")

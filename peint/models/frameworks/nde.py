@@ -59,7 +59,11 @@ class NeuralGeodesicFlows(ABC, nn.Module):
 
         partial_g = vmap(single_jacobian)(x).squeeze()  # shape (bs, m, m, m)
         g = self.metric(x)  # shape (bs, m, m) - compute once!
-        inverse_g = torch.linalg.inv(g.float()).to(x.dtype)  # reuse g
+
+        # Add small regularization to prevent singular matrices
+        eps = 1e-5
+        g_reg = g + eps * torch.eye(g.shape[-1], device=g.device, dtype=g.dtype)
+        inverse_g = torch.linalg.inv(g_reg.float()).to(x.dtype)  # reuse g
 
         if partial_g.dim() == 3:
             partial_g = partial_g.unsqueeze(0)  # (1, m, m, m)

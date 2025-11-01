@@ -4,6 +4,7 @@ defaults:
   - model_summary
   - lr_monitor
   - tqdm_progress_bar
+  - grad_norm
   # - rich_progress_bar
   - _self_
 

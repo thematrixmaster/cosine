@@ -99,7 +99,7 @@ class LEPTModule(PLMRLitModule):
             logits = self.net.decoder(y[:, :-1], Z_y_hat, y_attn_mask[:, :-1])
 
         trans_l2_dist = torch.norm(Z_y_hat - Z_y, dim=-1, p=2).unsqueeze(1)  # (bs,1)
-        trans_lat_loss = F.mse_loss(input=Z_y_hat, target=Z_y, reduction="none").mean(
+        trans_lat_loss = F.huber_loss(input=Z_y_hat, target=Z_y, reduction="none").mean(
             -1, keepdim=True
         )  # (bs,1)
         trans_dec_loss = F.cross_entropy(

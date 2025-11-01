@@ -274,7 +274,7 @@ class LEPT(NeuralGeodesicFlows):
         y_attn_mask = (y != self.vocab.pad_idx).long()
         logits = self.decoder(y[:, :-1], Z_y_hat, y_attn_mask[:, :-1])
 
-        trans_lat_loss = F.mse_loss(  # latent space transition loss
+        trans_lat_loss = F.huber_loss(  # latent space transition loss
             input=Z_y_hat,
             target=Z_y,
             reduction="mean",
@@ -285,7 +285,7 @@ class LEPT(NeuralGeodesicFlows):
             ignore_index=self.vocab.pad_idx,
             reduction="mean",
         )
-        loss = trans_lat_loss + trans_dec_loss
+        loss = 2 * trans_lat_loss + trans_dec_loss
         return dict(loss=loss, trans_lat_loss=trans_lat_loss, trans_dec_loss=trans_dec_loss)
 
     def loss(self, x, y, x_sizes, y_sizes, t, beta, **kwargs):

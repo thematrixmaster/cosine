@@ -16,5 +16,3 @@ scheduler:
   power: 2.0
 
 compile: false
-metrics: ${metrics}
-val_metrics_every_n_epoch: 1
