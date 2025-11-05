@@ -92,7 +92,9 @@ class NeuralGeodesicFlows(ABC, nn.Module):
 
         return torch.cat([dxbydt, dvbydt], dim=1)  # shape (bs, 2*m)
 
-    def exp(self, z: Tensor, t: Tensor, dt: float = 0.1) -> Tensor:
+    def exp(
+        self, z: Tensor, t: Tensor, dt: float = 0.1, return_intermediates: bool = False
+    ) -> Tensor:
         """
         Geodesic exponential map with variable num_steps per batch element.
         Only computes integration for elements that haven't finished.
@@ -100,19 +102,19 @@ class NeuralGeodesicFlows(ABC, nn.Module):
         num_steps = torch.clamp((t.abs() / dt).ceil().long(), min=5, max=150).squeeze()
         dt_steps = t / num_steps.unsqueeze(-1) if num_steps.dim() == 1 else t / num_steps
         max_steps = num_steps.max().item()
+
         result = z
+        if return_intermediates:
+            intermediates = [z]
 
         for step in range(max_steps):
             active = step < num_steps
-
             if not active.any():
                 break
-
             # Compute RK4 step only for active elements
             z_new = RK4_step(
                 result[active], dt_steps[active], self.geodesic_ODE_function
             )  # (num_active, 2*m)
-
             if active.all():
                 result = z_new
             else:
@@ -120,6 +122,11 @@ class NeuralGeodesicFlows(ABC, nn.Module):
                 result_new[active] = z_new
                 result = result_new
 
+            if return_intermediates:
+                intermediates.append(result.clone())
+
+        if return_intermediates:
+            return torch.stack(intermediates, dim=1), num_steps
         return result
 
     @abstractmethod

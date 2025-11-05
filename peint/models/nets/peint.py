@@ -587,6 +587,8 @@ class PEINTGenerator(PEINT):
                     self.vocab.mask_idx,
                     self.vocab.unk_idx,
                 ]
+                if y_sizes is not None:
+                    special_tok_idxs.append(self.vocab.eos_idx)
                 zero_idx = torch.tensor(special_tok_idxs, device=logits.device)
                 logits[..., zero_idx] = -np.inf
 
@@ -602,12 +604,15 @@ class PEINTGenerator(PEINT):
             # assert torch.all(eos_next_token == self.vocab.pad_idx), "Tokens generated after EOS should be PAD"
 
             # update y_sizes_decoded
+            y_sizes_decoded[batch_indices, y_chain_idx] += 1
+
             if y_sizes is None:
-                raise NotImplementedError("Dynamic length decoding not implemented yet.")
-                # check if chain has reached eos and if number of chains <= self.num_chains
-                # eos_reached |= (next_token.squeeze(-1) == self.vocab.eos_idx)
+                # Move to next chain if separator token is reached
+                finished_chains = next_token.squeeze(-1) == self.vocab.tokens_to_idx["."]
+                y_chain_idx += finished_chains.long()
+                eos_reached |= next_token.squeeze(-1) == self.vocab.eos_idx
+                y_chain_idx = torch.clamp(y_chain_idx, max=self.num_chains - 1)
             else:
-                y_sizes_decoded[batch_indices, y_chain_idx] += 1
                 # Move to next chain if chain length is reached according to y_sizes
                 finished_chains = (
                     y_sizes_decoded[batch_indices, y_chain_idx]

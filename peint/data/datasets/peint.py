@@ -74,6 +74,7 @@ class EncodedPEINTDataset(TorchWrapperDataset):
             mask_prob=self._mask_prob,
             random_token_prob=self._random_token_prob,
             leave_unmasked_prob=self._leave_unmasked_prob,
+            extra_special_tok_idx=[self.vocab.tokens_to_idx[self.sep_token]],
         )
 
         # y is always embedded together as one sequence for autoregressive training
