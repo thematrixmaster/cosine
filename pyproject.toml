@@ -13,11 +13,11 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     # --------- Core ML Framework --------- #
-    "torch>=2.0.0",
-    "torchvision>=0.15.0",
+    "torch>=2.6.0,<2.9.0",
+    "torchvision>=0.21.0",
     "lightning>=2.0.0",
     "torchmetrics>=0.11.4",
-    "flash-attn==2.7.4.post1",
+    "flash-attn>=2.8.3",
     "triton>=3.1.0",
     "fair-esm",
     "cherryml",
@@ -31,9 +31,11 @@ dependencies = [
     "matplotlib==3.8.0",
     "tqdm==4.66.3",
     "biopython>=1.85",
+    "editdistance==0.8.1",
     "scikit-learn>=1.7.1",
-    "more-itertools==10.1.0",
-    "typing-extensions==4.8.0",
+    "more-itertools>=10.1.0",
+    "umap-learn==0.5.9.post2",
+    "typing-extensions>=4.8.0",
     # --------- Jupyter & Notebooks --------- #
     "jupyter==1.0.0",
     "papermill==2.4.0",
@@ -47,6 +49,7 @@ dependencies = [
     "peft>=0.17.1",
     "einops>=0.8.1",
     "evo",
+    "jax>=0.5.3",
 ]
 
 [project.optional-dependencies]

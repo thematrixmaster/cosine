@@ -161,3 +161,5 @@ configs/local/default.yaml
 # symlinks
 logs
 results
+notebooks/lept_out
+notebooks/igfold_out

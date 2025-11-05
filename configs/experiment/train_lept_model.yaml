@@ -1,31 +1,31 @@
 # @package _global_
 
 # to execute this experiment run:
-# python train.py experiment=example
+# python experiments/train_model.py experiment=train_vae
 
 defaults:
   - override /data: plmr
-  - override /data/dataset: codon
-  - override /vocab: codon
-  - override /callbacks: peint
-  - override /model: peint
-  - override /net: peint
+  - override /data/dataset: lept
+  - override /vocab: esm
+  - override /callbacks: default
+  - override /metrics: none
+  - override /model: lept
+  - override /net: lept
   - override /trainer: gpu
   - override /logger: csv
 
 # all parameters below will be merged with parameters from default configurations set above
 # this allows you to overwrite only specified parameters
 
-tags: ["plmr", "peint", "codon"]
+tags: ["vae", "protein_vae", "lept"]
 
 seed: 12345
 
 trainer:
-  # min_epochs: 100
   max_epochs: null
-  max_steps: 300000
-  val_check_interval: 4000
-  accumulate_grad_batches: 6
+  max_steps: 500000
+  val_check_interval: 5000
+  accumulate_grad_batches: 2
   check_val_every_n_epoch: null
   gradient_clip_val: 1.0
   log_every_n_steps: 1
@@ -36,6 +36,7 @@ callbacks:
     monitor: val/loss/dataloader_idx_0
     mode: min
     every_n_train_steps: 5000
+    save_top_k: 1
   lr_monitor:
     logging_interval: step
   early_stopping:
@@ -43,42 +44,44 @@ callbacks:
     mode: min
     patience: 50
 
+vocab:
+  alphabet:
+    name: ESM-1b
+
 model:
   compile: false
   weight_decay: 0.01
   optimizer:
-    lr: 0.0004
+    lr: 0.0001
   scheduler:
     num_warmup_steps: 2000
+    num_training_steps: 100000
+  kl_anneal_steps: 10000
+  beta_max: 1.0
 
 net:
-  dropout_p: 0.0
-  num_heads: 16
-  num_encoder_layers: 3
-  num_decoder_layers: 3
-  use_chain_embedding: true
-  causal_decoder: true
-  embed_dim: 1024  # esm(640) + codon(384)
-  enc_model:
-    _target_: peint.models.nets.peint.ESMCodonEncoder.from_pretrained
-    codon_vocab: ${vocab}
-    codon_embed_dim: 384
+  latent_dim: 128
+  encoder_num_adaptive_layers: 3
+  decoder_num_layers: 3
+  decoder_num_heads: 16
+  max_len: 1024
+  esm_encoder:
     finetune: false
-    embed_x_per_chain: true
+    embed_x_per_chain: false
     ckpt_path: null
 
 data:
   shuffle: true
-  num_workers: 8
+  num_workers: 4
   batch_size: 16
   train_val_split: [0.95, 0.05]
   dataset:
-    embed_x_per_chain: ${net.enc_model.embed_x_per_chain}
-    permute_chain_order: true
-    random_token_prob: 0.1
-    leave_unmasked_prob: 0.1
-    mask_prob: 0.15
+    swap_prob: 0.0
+    sep_token: .
 
 logger:
   wandb:
     tags: ${tags}
+    project: peint-vae
+
+ckpt_path: null

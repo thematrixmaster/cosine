@@ -1,4 +1,4 @@
-_target_: peint.data.datasets.peint.EncodedPEINTDataset
+_target_: peint.data.datasets.lept.EncodedLEPTDataset
 
 dataset:
   _target_: torch.utils.data.ConcatDataset
@@ -19,10 +19,6 @@ dataset:
       min_t: 0.0
       chain_id_offset: 1
 
-sep_token: .
 vocab: ${vocab}
-mask_prob: 0.15
-random_token_prob: 0.0
-leave_unmasked_prob: 0.0
-embed_x_per_chain: false
-permute_chain_order: false
+swap_prob: 0.0
+sep_token: .

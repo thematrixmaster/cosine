@@ -1,0 +1,4 @@
+_target_: peint.models.nets.ctmc.NeuralCTMC.from_pretrained
+
+embed_x_per_chain: false
+ckpt_path: null

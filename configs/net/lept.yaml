@@ -1,0 +1,17 @@
+_target_: peint.models.nets.lept.LEPT
+
+vocab: ${vocab}
+
+esm_encoder:
+  _target_: peint.models.nets.peint.ESMEncoder.from_pretrained
+  finetune: false
+  embed_x_per_chain: false
+  ckpt_path: null
+
+latent_dim: 128
+encoder_num_adaptive_layers: 3
+decoder_num_layers: 6
+decoder_num_heads: 8
+num_steps: 10
+max_len: 1024
+is_vae: false

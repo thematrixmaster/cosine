@@ -1,4 +1,4 @@
-_target_: peint.models.modules.peint_module.PEINTModule
+_target_: peint.models.modules.ctmc_module.CTMCModule
 
 net: ${net}
 weight_decay: 0.01

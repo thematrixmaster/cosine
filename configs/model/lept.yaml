@@ -1,4 +1,4 @@
-_target_: peint.models.modules.peint_module.PEINTModule
+_target_: peint.models.modules.lept_module.LEPTModule
 
 net: ${net}
 weight_decay: 0.01
@@ -15,4 +15,6 @@ scheduler:
   num_training_steps: 100000
   power: 2.0
 
+kl_anneal_steps: 10000
+beta_max: 1.0
 compile: false

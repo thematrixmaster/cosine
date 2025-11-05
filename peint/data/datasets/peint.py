@@ -11,11 +11,12 @@ class EncodedPEINTDataset(TorchWrapperDataset):
         self,
         dataset: ComplexCherriesDataset,
         vocab: Vocab,
+        sep_token: str = ".",
         mask_prob: float = 0.15,
         random_token_prob: float = 0.1,
         leave_unmasked_prob: float = 0.1,
-        embed_x_per_chain: bool = False,
-        permute_chain_order: bool = False,
+        embed_x_per_chain: bool = True,
+        permute_chain_order: bool = True,
         permute_method: str | None = "random",  # "random" or "reverse"
         *args,
         **kwargs,
@@ -27,6 +28,7 @@ class EncodedPEINTDataset(TorchWrapperDataset):
         self.embed_x_per_chain = embed_x_per_chain
         self.permute_chain_order = permute_chain_order
         self.permute_method = permute_method
+        self.sep_token = sep_token
         assert permute_method in [
             "random",
             "reverse",
@@ -60,10 +62,10 @@ class EncodedPEINTDataset(TorchWrapperDataset):
                 [torch.from_numpy(self.vocab.encode_single_sequence(x)) for x in xs], dim=0
             )
         else:
-            x_sizes = torch.tensor([len(x) for x in xs], dtype=torch.long)
-            x_sizes[0] += self.vocab.prepend_bos  # add bos to first chain
+            x_sizes = torch.tensor([len(x) + 1 for x in xs], dtype=torch.long)
+            x_sizes[0] += self.vocab.prepend_bos - 1  # add bos to first chain
             x_sizes[-1] += self.vocab.append_eos  # add eos to last chain
-            xs = torch.from_numpy(self.vocab.encode_single_sequence("".join(xs)))
+            xs = torch.from_numpy(self.vocab.encode_single_sequence(self.sep_token.join(xs)))
 
         # apply masking to xs while ignoring special tokens
         x_src, x_tgt = mask_tensor(
@@ -75,10 +77,10 @@ class EncodedPEINTDataset(TorchWrapperDataset):
         )
 
         # y is always embedded together as one sequence for autoregressive training
-        y_sizes = torch.tensor([len(y) for y in ys], dtype=torch.long)
-        y_sizes[0] += self.vocab.prepend_bos  # add bos to first chain
+        y_sizes = torch.tensor([len(y) + 1 for y in ys], dtype=torch.long)
+        y_sizes[0] += self.vocab.prepend_bos - 1  # add bos to first chain
         y_sizes[-1] += self.vocab.append_eos  # add eos to last chain
-        ys = torch.from_numpy(self.vocab.encode_single_sequence("".join(ys)))
+        ys = torch.from_numpy(self.vocab.encode_single_sequence(self.sep_token.join(ys)))
 
         y_src, y_tgt = ys[:-1], ys[1:]  # shift y for autoregressive training
         y_sizes[-1] -= 1  # adjust sizes since y_src is shifted and truncated by 1
