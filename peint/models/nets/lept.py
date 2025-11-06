@@ -1,5 +1,6 @@
 from typing import List
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,6 +8,7 @@ from torch import Tensor
 
 from evo.tokenization import Vocab
 from peint.models.frameworks.nde import NeuralGeodesicFlows
+from peint.models.frameworks.peint import sampling_function
 from peint.models.nets.peint import ESMEncoder
 
 
@@ -103,6 +105,7 @@ class SequenceDecoder(nn.Module):
             src=x_emb,
             mask=causal_mask,
             src_key_padding_mask=src_key_padding_mask,
+            is_causal=True,
         )
 
         logits = self.lm_head(h)
@@ -317,11 +320,19 @@ class LEPT(NeuralGeodesicFlows):
         return mu
 
     @torch.no_grad()
-    def evolve(self, z: Tensor, t: Tensor) -> Tensor:
-        return self.exp(z, t)
+    def evolve(self, z: Tensor, t: Tensor, **kwargs) -> Tensor:
+        return self.exp(z, t, **kwargs)
 
     @torch.no_grad()
-    def decode(self, z: Tensor, max_len: int, temperature: float = 1.0) -> Tensor:
+    def decode(
+        self,
+        z: Tensor,
+        max_len: int,
+        p: float = 1.0,
+        temperature: float = 1.0,
+        argmax_decode: bool = False,
+        no_special_toks: bool = True,
+    ) -> Tensor:
         bsz = z.size(0)
         device = z.device
 
@@ -332,8 +343,22 @@ class LEPT(NeuralGeodesicFlows):
             attn_mask = torch.ones_like(x)
             logits = self.decoder(x, z, attn_mask)
 
+            if no_special_toks:
+                special_tok_idxs = [
+                    self.vocab.bos_idx,
+                    self.vocab.pad_idx,
+                    self.vocab.mask_idx,
+                    self.vocab.unk_idx,
+                ]
+                zero_idx = torch.tensor(special_tok_idxs, device=logits.device)
+                logits[..., zero_idx] = -np.inf
+
             next_logits = logits[:, -1, :] / temperature
-            next_token = torch.argmax(next_logits, dim=-1, keepdim=True)
+
+            if argmax_decode:
+                next_token = torch.argmax(next_logits, dim=-1, keepdim=True)
+            else:
+                next_token = sampling_function(next_logits, p=p)
 
             x = torch.cat([x, next_token], dim=1)
 
