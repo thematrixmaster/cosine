@@ -73,7 +73,7 @@ def filter_sequences(
 
 
 def simulate_evolution_with_rejection_sampling(
-    model,
+    generate_fn: Callable,
     root_sequence: str,
     tree: Tree,
     vocab: Vocab,
@@ -81,6 +81,7 @@ def simulate_evolution_with_rejection_sampling(
     max_decode_steps: int = 200,
     max_batch_size: int = 1000,
     n_sequences: int = 5,
+    x_sizes: torch.Tensor = None,
     p_threshold: float = 1.0,
     length_criterion: Callable[[str], bool] = lambda x: 50 <= x <= 200,
     likelihood_fn=None,
@@ -136,14 +137,18 @@ def simulate_evolution_with_rejection_sampling(
         time = torch.tensor(batch_branch_lengths, dtype=torch.float32).unsqueeze(-1)
         x_toks, time = x_toks.to(device), time.to(device)
 
+        # Print update with number of nodes sampled compared to total tree size
+        print(f"Simulated {len(all_sequences)} / {len(tree)} nodes")
+
         # Simulate child sequences using p(child | parent, time)
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            sequences = model.net.generate(
+            sequences = generate_fn(
                 x=x_toks,
                 t=time,
                 device=device,
-                max_decode_steps=max_decode_steps,
                 p=p_threshold,
+                max_decode_steps=max_decode_steps,
+                x_sizes=x_sizes,
             )
             decoded_sequences = vocab.decode(sequences)
 
@@ -158,6 +163,7 @@ def simulate_evolution_with_rejection_sampling(
             chosen_sequence = filter_sequences(node_sequences, length_criterion, likelihood_fn)
 
             if chosen_sequence is None:
+                print(f"Retry {retry_count} for node {node.name} failed to pass filters.")
                 if retry_count < max_retries:
                     # Add the parent node back to the left of the queue for another try
                     parent_node = node.up
