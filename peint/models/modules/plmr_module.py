@@ -20,7 +20,7 @@ class PLMRLitModule(LightningModule, ABC):
         *args,
         **kwargs,
     ) -> None:
-        super().__init__(*args, **kwargs)
+        super().__init__()
 
         # this line allows to access init params with 'self.hparams' attribute
         # also ensures init params will be stored in ckpt

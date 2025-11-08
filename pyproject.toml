@@ -50,6 +50,11 @@ dependencies = [
     "einops>=0.8.1",
     "evo",
     "jax>=0.5.3",
+    # --------- Protein Oracles --------- #
+    "transformers>=4.30.0",
+    "sru>=2.6.0",
+    "abnumber>=0.3.0",
+    "iglm>=0.1.0",
 ]
 
 [project.optional-dependencies]
