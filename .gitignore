@@ -161,6 +161,7 @@ configs/local/default.yaml
 # symlinks
 logs
 results
+external
 notebooks/gen_eval
 notebooks/inf_eval
 notebooks/igfold_out

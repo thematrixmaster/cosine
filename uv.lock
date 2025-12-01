@@ -175,7 +175,7 @@ wheels = [
 [[package]]
 name = "anarci"
 version = "1.3"
-source = { editable = "../../../../../scratch/users/stephen.lu/projects/ANARCI" }
+source = { editable = "../../../../../../scratch/users/stephen.lu/projects/ANARCI" }
 
 [[package]]
 name = "anarcii"
@@ -3417,7 +3417,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "abnumber", specifier = ">=0.3.0" },
-    { name = "anarci", editable = "../../../../../scratch/users/stephen.lu/projects/ANARCI" },
+    { name = "anarci", editable = "../../../../../../scratch/users/stephen.lu/projects/ANARCI" },
     { name = "biopython", specifier = ">=1.85" },
     { name = "black", specifier = ">=25.1.0" },
     { name = "cherryml", git = "https://github.com/songlab-cal/CherryML" },

@@ -11,6 +11,7 @@
 *.csv
 *.csv.gz
 *.pdf
+*.zip
 
 # symlinks
 link.sh
