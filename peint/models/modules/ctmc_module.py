@@ -46,7 +46,7 @@ class CTMCModule(PLMRLitModule):
     def forward(self, x, t, x_sizes, Q=None, *args, **kwargs):
         """Obtain per-site rate matrices and obtain log likelihoods for rows in x"""
         if Q is None:
-            Q = self.net(x, x_sizes, *args, **kwargs)  # (B, L, V, V)
+            Q, pi = self.net(x, x_sizes, *args, **kwargs)  # (B, L, V, V)
         t = t.unsqueeze(-1).unsqueeze(-1)  # (B, 1, 1, 1)
         P = torch.matrix_exp(Q * t)  # (B, L, V, V)
         # we want to index into P[b, l, x[b,l], :] to get a tensor of shape (B, L, V)
@@ -75,7 +75,7 @@ class CTMCModule(PLMRLitModule):
         x, y, t, x_sizes = batch
 
         with torch.no_grad():
-            Q: Tensor = self.net(x, x_sizes=x_sizes)  # (B, L, V, V)
+            Q, pi = self.net(x, x_sizes=x_sizes)  # (B, L, V, V)
             log_probs: Tensor = self.forward(x, t, x_sizes=x_sizes, Q=Q)  # (B, L, V)
 
         # Keep unreduced to get per-site time likelihood (B, L)

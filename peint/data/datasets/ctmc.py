@@ -11,11 +11,13 @@ class CTMCDataset(TorchWrapperDataset):
         vocab: Vocab,
         dataset: ComplexCherriesDataset,
         sep_token: str = ".",
+        random_cherry_order: bool = False,
         *args,
         **kwargs,
     ):
         super().__init__(dataset=dataset, vocab=vocab, *args, **kwargs)
         self.sep_token = sep_token
+        self.random_cherry_order = random_cherry_order
 
     def __getitem__(self, index: int):
         xs, ys, ts, _ = super().__getitem__(index)
@@ -24,6 +26,12 @@ class CTMCDataset(TorchWrapperDataset):
         assert all(
             [len(x) == len(y) for x, y in zip(xs, ys)]
         ), "x and y chains must have the same lengths"
+
+        # if random order is true, then permute order of x and y randomly
+        if self.random_cherry_order:
+            perm = torch.randperm(len(xs))
+            xs = [xs[i] for i in perm]
+            ys = [ys[i] for i in perm]
 
         # x is always embedded together as one sequence with a separator token
         x_sizes = torch.tensor([len(x) + 1 for x in xs], dtype=torch.long)

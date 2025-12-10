@@ -7,6 +7,7 @@
 /flab/*
 /dasm/*
 /tr_rosetta/*
+/tr_rosetta_15k_aligned/*
 *.txt
 *.csv
 *.csv.gz
@@ -23,4 +24,5 @@ wyatt
 oas
 flab
 tr_rosetta
+tr_rosetta_15k_aligned
 lept

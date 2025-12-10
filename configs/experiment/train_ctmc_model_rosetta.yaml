@@ -5,7 +5,7 @@
 
 defaults:
   - override /data: plmr
-  - override /data/dataset: ctmc
+  - override /data/dataset: tr-rosetta-ali
   - override /vocab: esm
   - override /callbacks: peint
   - override /model: ctmc
@@ -16,15 +16,15 @@ defaults:
 # all parameters below will be merged with parameters from default configurations set above
 # this allows you to overwrite only specified parameters
 
-tags: ["plmr", "peint", "ctmc"]
+tags: ["plmr", "peint", "ctmc", "tr-rosetta", "aligned"]
 
 seed: 12345
 
 trainer:
   # min_epochs: 100
   max_epochs: null
-  max_steps: 300000
-  val_check_interval: 4000
+  max_steps: 1000000
+  val_check_interval: 5000
   accumulate_grad_batches: 6
   check_val_every_n_epoch: null
   gradient_clip_val: 1.0
@@ -35,7 +35,7 @@ callbacks:
   model_checkpoint:
     monitor: val/loss/dataloader_idx_0
     mode: min
-    every_n_train_steps: 4000
+    every_n_train_steps: 5000
   lr_monitor:
     logging_interval: step
   early_stopping:
@@ -51,9 +51,9 @@ model:
   compile: false
   weight_decay: 0.01
   optimizer:
-    lr: 0.0003
+    lr: 0.00025
   scheduler:
-    num_warmup_steps: 2000
+    num_warmup_steps: 2500
 
 net:
   embed_x_per_chain: false
@@ -61,7 +61,7 @@ net:
 
 data:
   shuffle: true
-  num_workers: 7
+  num_workers: 16
   batch_size: 16
   train_val_split: [0.95, 0.05]
 

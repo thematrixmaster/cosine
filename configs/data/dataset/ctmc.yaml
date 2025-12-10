@@ -20,3 +20,4 @@ dataset:
       chain_id_offset: 1
 
 vocab: ${vocab}
+random_cherry_order: false

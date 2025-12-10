@@ -1,17 +1,25 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from esm.modules import ESM1bLayerNorm, gelu
-from torch import Tensor
+from typing import Tuple
 from tqdm import tqdm
 
+import torch
+import torch.nn as nn
+from torch import Tensor
+import torch.nn.functional as F
+
+from esm.modules import ESM1bLayerNorm, gelu
 from peint.models.nets.peint import ESMEncoder
+from peint.models.frameworks.ctmc import MarkovBridgeSampler, BridgeTrajectory
 
 
 class RateMatrixOutputHead(nn.Module):
     """
-    Output head that parameterizes CTMC rate matrix from ESM embeddings.
-    Uses the Pande transformation to ensure detailed balance and fixed stationary distribution.
+    Output head that parameterizes CTMC rate matrices from embeddings.
+    Uses the Pande transformation to ensure detailed balance.
+    
+    The rate matrix Q satisfies:
+    - Rows sum to zero: Σ_j Q_ij = 0
+    - Off-diagonal entries non-negative: Q_ij ≥ 0 for i ≠ j
+    - Detailed balance: π_i Q_ij = π_j Q_ji
     """
 
     def __init__(self, embed_dim: int, num_states: int):
@@ -22,28 +30,36 @@ class RateMatrixOutputHead(nn.Module):
         self.theta_fc = nn.Linear(embed_dim, num_states)
         self.Theta_fc = nn.Linear(embed_dim, num_states * (num_states - 1) // 2)
 
-    def forward(self, hx: Tensor) -> Tensor:
-        # hx shape: (B, L, embed_dim)
+    def forward(self, hx: Tensor) -> Tuple[Tensor, Tensor]:
+        """
+        Args:
+            hx: Hidden states (B, L, embed_dim)
+            
+        Returns:
+            Q: Rate matrices (B, L, V, V)
+            pi: Stationary distributions (B, L, V)
+        """
         B, L, _ = hx.size()
-
         hx = self.layer_norm(gelu(self.dense(hx)))
 
-        # Stationary distribution and symmetric S parameters
+        # Stationary distribution
         pi = F.softmax(self.theta_fc(hx), dim=-1)  # (B, L, V)
+        
+        # Symmetric exchange parameters
         Theta = F.softplus(self.Theta_fc(hx))  # (B, L, V*(V-1)/2)
 
-        # Build symmetric S matrix
-        S = torch.zeros(B, L, self.num_states, self.num_states, device=hx.device)
-        triu_indices = torch.triu_indices(self.num_states, self.num_states, offset=1)
-        S[:, :, triu_indices[0], triu_indices[1]] = Theta
+        # Build symmetric S matrix from upper triangular parameters
+        S = torch.zeros(B, L, self.num_states, self.num_states, device=hx.device, dtype=hx.dtype)
+        triu_idx = torch.triu_indices(self.num_states, self.num_states, offset=1, device=hx.device)
+        S[:, :, triu_idx[0], triu_idx[1]] = Theta
         S = S + S.transpose(-2, -1)
 
-        # Pande transformation: Q = π^(-1/2) @ S @ π^(1/2)
+        # Pande transformation: Q = diag(1/√π) S diag(√π) - diag(row_sums)
         pi_sqrt = pi.sqrt()
         Q = torch.diag_embed(1.0 / pi_sqrt) @ S @ torch.diag_embed(pi_sqrt)
         Q = Q - torch.diag_embed(Q.sum(dim=-1))
 
-        return Q
+        return Q, pi
 
 
 class NeuralCTMC(ESMEncoder):
@@ -59,18 +75,29 @@ class NeuralCTMC(ESMEncoder):
         # output layer parameterizes position-wise rate matrix
         return RateMatrixOutputHead(embed_dim=self.embed_dim, num_states=len(self.vocab))
 
-    def forward(self, x: Tensor, x_sizes: Tensor) -> Tensor:
+    def forward(self, x: Tensor, x_sizes: Tensor) -> Tuple[Tensor, Tensor]:
+        """
+        Args:
+            x: Input tokens (B, L)
+            x_sizes: Size of each chain
+            
+        Returns:
+            Q: Rate matrices (B, L, V, V)
+            pi: Stationary distributions (B, L, V)
+        """
         if self.embed_x_per_chain:
-            # Multi-sequence processing: compute ESM per chain
             hx = self.forward_per_chain(x, x_sizes)
         else:
-            # Single-sequence processing: process concatenated sequence
             res = self.esm(x, repr_layers=[self.esm.num_layers], need_head_weights=False)
             hx = res["representations"][self.esm.num_layers]
 
-        # hx shape: (B, L, esm_embed_dim) -> output rates
-        Q = self.output_head(hx)  # (B, L, V, V)
-        return Q
+        return self.output_head(hx)
+
+    def transition_probs(self, Q: Tensor, t: Tensor) -> Tensor:
+        """Compute P(t) = exp(Qt) via matrix exponential."""
+        B = Q.size(0)
+        t = t.view(B, 1, 1, 1)
+        return torch.matrix_exp(Q * t)
 
     def exp_Qt(self, Q: Tensor, t: Tensor) -> Tensor:
         """
@@ -97,7 +124,7 @@ class NeuralCTMC(ESMEncoder):
     @torch.no_grad()
     def perplexity(self, t: Tensor, x: Tensor, y: Tensor, x_sizes: Tensor) -> Tensor:
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            Q: Tensor = self.forward(x, x_sizes=x_sizes)  # (B, L, V, V)
+            Q, _ = self.forward(x, x_sizes=x_sizes)  # (B, L, V, V)
             P: Tensor = self.exp_Qt(Q, t)
             log_probs: Tensor = self.log_Px(P, x)
 
@@ -109,6 +136,27 @@ class NeuralCTMC(ESMEncoder):
         nll_mean = (nll * y_tgt_mask).sum(dim=1) / y_tgt_mask.sum(dim=1)
         ppl = torch.exp(nll_mean)
         return ppl
+
+
+class NeuralCTMCGenerator:
+    """CTMC model with sequence generation methods."""
+
+    def __init__(self, neural_ctmc: NeuralCTMC, *args, **kwargs):
+        self.device = next(neural_ctmc.parameters()).device
+        self.vocab = neural_ctmc.vocab
+        special_tok_idxs = [
+            self.vocab.bos_idx,
+            self.vocab.pad_idx,
+            self.vocab.eos_idx,
+            self.vocab.unk_idx,
+            self.vocab.mask_idx,
+            self.vocab.tokens_to_idx["."],  # cannot change to separator token
+        ]
+        self.sp_tok_idxs = torch.tensor(special_tok_idxs, device=self.device)
+        self.__neural_ctmc = neural_ctmc
+
+    def __getattr__(self, name):
+        return getattr(self.__neural_ctmc, name)
 
     @torch.no_grad()
     def generate_with_independent_sites(
@@ -122,33 +170,23 @@ class NeuralCTMC(ESMEncoder):
         """
         Generates sequences by simulating the CTMC over time t independently at each site.
         Args
-            x: starting state vector (B, L, V)
+            x: starting state vector (B, L)
             t: time tensor of shape (B,) or (B, 1)
             x_sizes: size of each chain in x (B, L)
         Returns
             y ~ exp(Q*t)[x,:]
         """
-        Q = self.forward(x, x_sizes=x_sizes)
+        Q, _ = self.forward(x, x_sizes=x_sizes)
         log_probs = self.log_Px(self.exp_Qt(Q, t), x)  # (B, L, V)
 
-        special_tok_idxs = [
-            self.vocab.bos_idx,
-            self.vocab.pad_idx,
-            self.vocab.eos_idx,
-            self.vocab.unk_idx,
-            self.vocab.mask_idx,
-            self.vocab.tokens_to_idx["."],  # cannot change to separator token
-        ]
-        sp_tok_idxs = torch.tensor(special_tok_idxs, device=log_probs.device)
-
         if no_special_toks:
-            log_probs[:, :, sp_tok_idxs] = -float("inf")
+            log_probs[:, :, self.sp_tok_idxs] = -float("inf")
             log_probs = log_probs - log_probs.logsumexp(dim=-1, keepdim=True)
 
         probs = torch.exp(log_probs / temperature)  # (B, L, V)
         y = torch.distributions.Categorical(probs).sample()  # (B, L)
 
-        dnc_mask = torch.isin(x, sp_tok_idxs)
+        dnc_mask = torch.isin(x, self.sp_tok_idxs)
         y[dnc_mask] = x[dnc_mask]
         return y
 
@@ -176,23 +214,13 @@ class NeuralCTMC(ESMEncoder):
         target_t = t.view(-1)
         elapsed_t = torch.zeros_like(t).view(-1)
         active = torch.ones(B, dtype=torch.bool, device=x.device)
-
-        special_tok_idxs = [
-            self.vocab.bos_idx,
-            self.vocab.pad_idx,
-            self.vocab.eos_idx,
-            self.vocab.unk_idx,
-            self.vocab.mask_idx,
-            self.vocab.tokens_to_idx["."],  # cannot change to separator token
-        ]
-        sp_tok_idxs = torch.tensor(special_tok_idxs, device=x.device)
-        dnc_mask = torch.isin(x, sp_tok_idxs)  # (B, L)
+        dnc_mask = torch.isin(x, self.sp_tok_idxs)  # (B, L)
 
         for _ in tqdm(range(max_decode_steps)):
             if not active.any():
                 break
 
-            Q = self.forward(y, x_sizes=x_sizes)
+            Q, _ = self.forward(y, x_sizes=x_sizes)
             exit_rates = -torch.diagonal(Q, dim1=-2, dim2=-1).gather(2, y.unsqueeze(-1)).squeeze(-1)
 
             holding_times = -torch.log(torch.rand_like(exit_rates) + 1e-10) / (
@@ -211,7 +239,7 @@ class NeuralCTMC(ESMEncoder):
             rates[batch_idx, current_state] = 0.0  # do not allow self-transition
 
             if no_special_toks:
-                rates[:, sp_tok_idxs] = 0.0  # do not allow transition to special tokens
+                rates[:, self.sp_tok_idxs] = 0.0  # do not allow transition to special tokens
 
             probs = rates / (rates.sum(dim=-1, keepdim=True) + 1e-10)
             if temperature != 1.0:
@@ -224,3 +252,29 @@ class NeuralCTMC(ESMEncoder):
             elapsed_t[active] += min_times[active]
 
         return y
+    
+    @torch.no_grad()
+    def sample_markov_bridge(
+        self,
+        x: Tensor,
+        y: Tensor,
+        t: Tensor,
+        x_sizes: Tensor,
+        max_substitutions: int = 50,
+    ) -> BridgeTrajectory:
+        """
+        Convenience function to sample bridge trajectories.
+        
+        Args:
+            model: Neural CTMC model
+            x: Starting sequences (B, L)
+            y: Ending sequences (B, L)
+            t: Branch lengths (B,) or (B, 1)
+            x_sizes: Chain sizes for encoding
+            max_substitutions: Maximum substitutions per position
+            
+        Returns:
+            BridgeTrajectory with sampled evolutionary paths
+        """
+        sampler = MarkovBridgeSampler(self.__neural_ctmc)
+        return sampler.sample(x, y, t, x_sizes, max_substitutions)

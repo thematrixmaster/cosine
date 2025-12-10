@@ -312,14 +312,24 @@ Examples:
         """,
     )
 
-    parser.add_argument("run_dir", type=Path, help="Path to the runs directory to clean up")
-
     parser.add_argument(
-        "--delete", action="store_true", help="Actually delete files (default is dry-run)"
+        "--run_dir",
+        type=Path,
+        help="Path to the runs directory to clean up",
+        default="./logs/train/runs",
+        required=False,
     )
 
     parser.add_argument(
-        "--interactive", action="store_true", help="Interactive mode for runs with checkpoints"
+        "--delete",
+        action="store_true",
+        help="Actually delete files (default is dry-run)",
+    )
+
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Interactive mode for runs with checkpoints",
     )
 
     args = parser.parse_args()
