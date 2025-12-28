@@ -5,7 +5,7 @@
 
 defaults:
   - override /data: plmr
-  - override /data/dataset: ctmc
+  - override /data/dataset: ctmc  # aho or ctmc
   - override /vocab: esm
   - override /callbacks: peint
   - override /model: ctmc
@@ -16,7 +16,7 @@ defaults:
 # all parameters below will be merged with parameters from default configurations set above
 # this allows you to overwrite only specified parameters
 
-tags: ["plmr", "peint", "ctmc", "aligned"]
+tags: ["plmr", "peint", "ctmc", "aligned"]  # aho or ctmc
 
 seed: 12345
 
@@ -24,7 +24,7 @@ trainer:
   # min_epochs: 100
   max_epochs: null
   max_steps: 300000
-  val_check_interval: 2500
+  val_check_interval: 1000
   accumulate_grad_batches: 3
   check_val_every_n_epoch: null
   gradient_clip_val: 1.0
@@ -35,13 +35,13 @@ callbacks:
   model_checkpoint:
     monitor: val/loss/dataloader_idx_0
     mode: min
-    every_n_train_steps: 2500
+    every_n_train_steps: 1000
   lr_monitor:
     logging_interval: step
   early_stopping:
     monitor: val/loss/dataloader_idx_0
     mode: min
-    patience: 50
+    patience: 10
 
 vocab:
   alphabet:
@@ -53,7 +53,7 @@ model:
   optimizer:
     lr: 0.00025
   scheduler:
-    num_warmup_steps: 2500
+    num_warmup_steps: 1000
 
 net:
   embed_x_per_chain: false

@@ -150,9 +150,9 @@ class ESMEncoder(PretrainedEncoder):
     def from_pretrained(cls, *args, **kwargs) -> "ESMEncoder":
         """Create an ESMEncoder from a pretrained ESM model."""
         import esm
-
-        # _esm_model, esm_vocab = esm.pretrained.esm2_t30_150M_UR50D()
-        _esm_model, esm_vocab = esm.pretrained.esm2_t33_650M_UR50D()
+        
+        _esm_model, esm_vocab = esm.pretrained.esm2_t30_150M_UR50D()
+        # _esm_model, esm_vocab = esm.pretrained.esm2_t33_650M_UR50D()
 
         esm_model = ESM2Flash(
             alphabet="ESM-1b",

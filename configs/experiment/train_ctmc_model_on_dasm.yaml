@@ -5,7 +5,9 @@
 
 defaults:
   - override /data: plmr
-  - override /data/dataset: tr-rosetta-ali
+  - override /data/dataset: none
+  - override /data/dataset@data.dataset_train: dasm-tr
+  - override /data/dataset@data.dataset_val: dasm-val
   - override /vocab: esm
   - override /callbacks: peint
   - override /model: ctmc
@@ -16,16 +18,14 @@ defaults:
 # all parameters below will be merged with parameters from default configurations set above
 # this allows you to overwrite only specified parameters
 
-tags: ["plmr", "peint", "ctmc", "tr-rosetta", "aligned"]
+tags: ["plmr", "ctmc", "aligned", "dasm-dataset", "aho"]
 
 seed: 12345
 
 trainer:
-  # min_epochs: 100
   max_epochs: null
-  min_steps: 10000000
-  max_steps: 10000000
-  val_check_interval: 10000
+  max_steps: 1000000
+  val_check_interval: 5000
   accumulate_grad_batches: 3
   check_val_every_n_epoch: null
   gradient_clip_val: 1.0
@@ -34,13 +34,13 @@ trainer:
 
 callbacks:
   model_checkpoint:
-    monitor: val/loss/dataloader_idx_0
+    monitor: val/loss
     mode: min
-    every_n_train_steps: 10000
+    every_n_train_steps: 5000
   lr_monitor:
     logging_interval: step
   early_stopping:
-    monitor: val/loss/dataloader_idx_0
+    monitor: val/loss
     mode: min
     patience: 50
 
@@ -52,7 +52,7 @@ model:
   compile: false
   weight_decay: 0.01
   optimizer:
-    lr: 0.0003
+    lr: 0.00025
   scheduler:
     num_warmup_steps: 5000
 
@@ -62,7 +62,7 @@ net:
 
 data:
   shuffle: true
-  num_workers: 16
+  num_workers: 0
   batch_size: 16
   train_val_split: [0.95, 0.05]
 

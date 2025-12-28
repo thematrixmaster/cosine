@@ -8,16 +8,18 @@
 #SBATCH --output=logs/runs/%x-%j.out    # output file
 #SBATCH --gres=gpu:1
 
-##SBATCH --partition=yss
-##SBATCH --nodelist=beren,luthien
+#SBATCH --partition=yss
+#SBATCH --nodelist=beren,luthien
 
-#SBATCH --partition=jsteinhardt
-#SBATCH --nodelist=saruman
+##SBATCH --partition=jsteinhardt
+##SBATCH --nodelist=saruman
 
 #########################
 ####### Metadata ########
 #########################
+set -euo pipefail
 dt=$(date '+%d/%m/%Y-%H:%M:%S')
+NUM_GPUS=$(nvidia-smi -L | wc -l)
 echo "Job started on $(hostname) at ${dt}"
 echo "GPU info:"
 nvidia-smi
@@ -25,11 +27,15 @@ nvidia-smi
 #########################
 ####### Routine #########
 #########################
-module load cuda/12.8
+# module load cuda/12.8
 export HYDRA_FULL_ERROR=1
-export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 export NCCL_DEBUG=INFO
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export OMP_NUM_THREADS=$(( SLURM_CPUS_PER_TASK / NUM_GPUS ))
 
-uv run python $@
+echo "Auto-detected ${NUM_GPUS} GPUs and ${SLURM_CPUS_PER_TASK} CPUs."
+echo "Setting OMP_NUM_THREADS=${OMP_NUM_THREADS}"
+
+python $@
 
 echo "Job completed at $(date)"

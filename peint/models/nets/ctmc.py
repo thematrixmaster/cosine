@@ -22,29 +22,35 @@ class RateMatrixOutputHead(nn.Module):
     - Detailed balance: π_i Q_ij = π_j Q_ji
     """
 
-    def __init__(self, embed_dim: int, num_states: int):
+    def __init__(self, embed_dim: int, num_states: int, valid_token_mask: Tensor):
         super().__init__()
         self.num_states = num_states
+        self.register_buffer("valid_token_mask", valid_token_mask)  # (V,) boolean
+        mask_2d = valid_token_mask.unsqueeze(0) & valid_token_mask.unsqueeze(1)
+        self.register_buffer("valid_token_2d_mask", mask_2d) # (V, V)
+
         self.dense = nn.Linear(embed_dim, embed_dim)
         self.layer_norm = ESM1bLayerNorm(embed_dim)
         self.theta_fc = nn.Linear(embed_dim, num_states)
         self.Theta_fc = nn.Linear(embed_dim, num_states * (num_states - 1) // 2)
 
-    def forward(self, hx: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(self, hx: Tensor, return_log_pi: bool = False) -> Tuple[Tensor, Tensor]:
         """
         Args:
             hx: Hidden states (B, L, embed_dim)
-            
+            return_log_pi: Whether to return the log of the stationary distribution
         Returns:
             Q: Rate matrices (B, L, V, V)
-            pi: Stationary distributions (B, L, V)
+            pi: Stationary distributions (B, L, V) or log of stationary distributions (B, L, V) if return_log_pi is True
         """
         B, L, _ = hx.size()
         hx = self.layer_norm(gelu(self.dense(hx)))
 
         # Stationary distribution
-        pi = F.softmax(self.theta_fc(hx), dim=-1)  # (B, L, V)
-        
+        pi_logits = self.theta_fc(hx)
+        pi_logits = pi_logits.masked_fill(~self.valid_token_mask, float('-inf'))
+        log_pi = torch.log_softmax(pi_logits, dim=-1)  # (B, L, V)
+
         # Symmetric exchange parameters
         Theta = F.softplus(self.Theta_fc(hx))  # (B, L, V*(V-1)/2)
 
@@ -54,12 +60,18 @@ class RateMatrixOutputHead(nn.Module):
         S[:, :, triu_idx[0], triu_idx[1]] = Theta
         S = S + S.transpose(-2, -1)
 
+        # Mask S before Pande transformation (no invalid state interactions)
+        S = S * self.valid_token_2d_mask
+
+        # Get a safe version of sqrt(pi) for Pande transform
+        log_pi_safe = torch.where(self.valid_token_mask, log_pi, torch.zeros_like(log_pi))
+        pi_sqrt = log_pi_safe.exp().sqrt()
+
         # Pande transformation: Q = diag(1/√π) S diag(√π) - diag(row_sums)
-        pi_sqrt = pi.sqrt()
         Q = torch.diag_embed(1.0 / pi_sqrt) @ S @ torch.diag_embed(pi_sqrt)
         Q = Q - torch.diag_embed(Q.sum(dim=-1))
 
-        return Q, pi
+        return Q, log_pi if return_log_pi else log_pi.exp()
 
 
 class NeuralCTMC(ESMEncoder):
@@ -72,10 +84,24 @@ class NeuralCTMC(ESMEncoder):
         self.criterion = nn.CrossEntropyLoss(reduction="mean", ignore_index=self.vocab.pad_idx)
 
     def get_out_lm_head(self) -> nn.Module:
-        # output layer parameterizes position-wise rate matrix
-        return RateMatrixOutputHead(embed_dim=self.embed_dim, num_states=len(self.vocab))
+        _special_tok_idxs = torch.tensor([
+            self.vocab.bos_idx,
+            self.vocab.pad_idx,
+            self.vocab.eos_idx,
+            self.vocab.unk_idx,
+            self.vocab.mask_idx,
+            self.vocab.tokens_to_idx["<null_1>"],
+            self.vocab.tokens_to_idx["."],
+        ])
+        valid_token_mask = torch.ones(len(self.vocab), dtype=torch.bool)
+        valid_token_mask[_special_tok_idxs] = False
+        return RateMatrixOutputHead(
+            embed_dim=self.embed_dim,
+            num_states=len(self.vocab),
+            valid_token_mask=valid_token_mask,
+        )
 
-    def forward(self, x: Tensor, x_sizes: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(self, x: Tensor, x_sizes: Tensor, *args, **kwargs) -> Tuple[Tensor, Tensor]:
         """
         Args:
             x: Input tokens (B, L)
@@ -91,7 +117,7 @@ class NeuralCTMC(ESMEncoder):
             res = self.esm(x, repr_layers=[self.esm.num_layers], need_head_weights=False)
             hx = res["representations"][self.esm.num_layers]
 
-        return self.output_head(hx)
+        return self.output_head(hx, *args, **kwargs)
 
     def transition_probs(self, Q: Tensor, t: Tensor) -> Tensor:
         """Compute P(t) = exp(Qt) via matrix exponential."""
@@ -150,7 +176,13 @@ class NeuralCTMCGenerator:
             self.vocab.eos_idx,
             self.vocab.unk_idx,
             self.vocab.mask_idx,
-            self.vocab.tokens_to_idx["."],  # cannot change to separator token
+            self.vocab.tokens_to_idx.get("<null_1>", -1),
+            self.vocab.tokens_to_idx.get(".", -1),
+            self.vocab.tokens_to_idx.get("X", -1),
+            self.vocab.tokens_to_idx.get("B", -1),
+            self.vocab.tokens_to_idx.get("Z", -1),
+            self.vocab.tokens_to_idx.get("O", -1),
+            self.vocab.tokens_to_idx.get("U", -1),
         ]
         self.sp_tok_idxs = torch.tensor(special_tok_idxs, device=self.device)
         self.__neural_ctmc = neural_ctmc
@@ -199,6 +231,8 @@ class NeuralCTMCGenerator:
         temperature: float = 1.0,
         no_special_toks: bool = True,
         max_decode_steps: int = 1024,
+        use_scalar_steps: bool = False,
+        verbose: bool = False,
     ) -> Tensor:
         """
         Gillespie simulation: iteratively sample mutations until time t is reached.
@@ -216,7 +250,13 @@ class NeuralCTMCGenerator:
         active = torch.ones(B, dtype=torch.bool, device=x.device)
         dnc_mask = torch.isin(x, self.sp_tok_idxs)  # (B, L)
 
-        for _ in tqdm(range(max_decode_steps)):
+        if use_scalar_steps:
+            t = t.int()
+            max_decode_steps = t.int().max().item()
+            if max_decode_steps < 10:
+                print(f"Warning: t is an integer number of discrete steps, but max_decode_steps is less than 10. This may be an error with the scalar steps t.")
+
+        for _ in tqdm(range(max_decode_steps), disable=not verbose):
             if not active.any():
                 break
 
@@ -249,7 +289,14 @@ class NeuralCTMCGenerator:
             new_state = torch.distributions.Categorical(probs).sample()
             y[active, min_pos[active]] = new_state[active]
             y[dnc_mask] = x[dnc_mask]
-            elapsed_t[active] += min_times[active]
+
+            if use_scalar_steps:
+                elapsed_t[active] += 1
+            else:
+                elapsed_t[active] += min_times[active]
+
+            if verbose:
+                print(f"Time: {elapsed_t[active].mean().item():.4f}, Sequence: {self.vocab.decode(y[active])}")
 
         return y
     
@@ -278,3 +325,53 @@ class NeuralCTMCGenerator:
         """
         sampler = MarkovBridgeSampler(self.__neural_ctmc)
         return sampler.sample(x, y, t, x_sizes, max_substitutions)
+
+
+# Example usage
+if __name__ == "__main__":
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    model = NeuralCTMC.from_pretrained(embed_x_per_chain=True).to(device)
+    sampler = MarkovBridgeSampler(model=model)
+    vocab = model.vocab
+
+    # Dummy data (start and end sequences)
+    _x = ["ACDEFGHIK", "GVLMIP"]
+    _y = ["MWVLSTQRN", "STYWKF"]
+    sizes = [len(seq) for seq in _x]
+    x = torch.from_numpy(vocab.encode_batched_sequences(_x)).to(device)
+    y = torch.from_numpy(vocab.encode_batched_sequences(_y)).to(device)
+
+    x_sizes = torch.zeros_like(x)
+    x_sizes[:, 0] = torch.tensor(sizes, device=device)
+
+    B, L = x.shape
+    t = torch.rand(B, device=device) * 5.0  # Random branch lengths between 0 and 5
+
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        bridge_trajectories = sampler.sample(
+            x=x,
+            y=y,
+            t=t,
+            x_sizes=x_sizes,
+            max_substitutions=20,
+        )
+
+    for b in range(B):
+        print(f"Trajectory for sequence {b}:")
+        num_events = bridge_trajectories.num_events[b]
+        sequences = vocab.decode(bridge_trajectories.sequences[b, :num_events])
+        times = bridge_trajectories.times[b][:num_events].tolist()
+
+        for idx, (seq, time) in enumerate(zip(sequences, times)):
+            if idx == 0:
+                print(f"Time: {time:.4f}, Sequence: {seq} (start) == {_x[b]}")
+            elif idx == len(sequences) - 1:
+                print(f"Time: {time:.4f} == {t[b].item()}, Sequence: {seq} (end) == {_y[b]}")
+            else:
+                print(f"Time: {time:.4f}, Sequence: {seq}")
+        print()
+        
+    breakpoint()
+    

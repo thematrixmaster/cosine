@@ -1,33 +1,43 @@
-_target_: peint.data.datasets.peint.EncodedPEINTDataset
+# _target_: peint.data.datasets.peint.EncodedPEINTDataset
+_target_: peint.data.datasets.ctmc.CTMCDataset
 
 dataset:
   _target_: torch.utils.data.ConcatDataset
   datasets:
     - _target_: evo.dataset.ComplexCherriesDataset
-      data_file: ${paths.data_dir}/dasm/edges/val/v1jaffePairedCC.txt
+      # data_file: ${paths.data_dir}/dasm/edges/val/v1jaffePairedCC.txt
+      data_file: ${paths.data_dir}/dasm/edges_aho/val/v1jaffePairedCC.txt
       sep_token: .
       min_t: 0.0
       chain_id_offset: 1
     - _target_: evo.dataset.ComplexCherriesDataset
-      data_file: ${paths.data_dir}/dasm/edges/val/v1tangCC.txt
+      # data_file: ${paths.data_dir}/dasm/edges/val/v1tangCC.txt
+      data_file: ${paths.data_dir}/dasm/edges_aho/val/v1tangCC.txt
       sep_token: .
       min_t: 0.0
       chain_id_offset: 1
     - _target_: evo.dataset.ComplexCherriesDataset
-      data_file: ${paths.data_dir}/dasm/edges/val/v1vanwinkleheavyTrainCC.txt
+      # data_file: ${paths.data_dir}/dasm/edges/val/v1vanwinkleheavyTrainCC.txt
+      data_file: ${paths.data_dir}/dasm/edges_aho/val/v1vanwinkleheavyTrainCC.txt
       sep_token: .
       min_t: 0.0
       chain_id_offset: 1
     - _target_: evo.dataset.ComplexCherriesDataset
-      data_file: ${paths.data_dir}/dasm/edges/val/v1vanwinklelightTrainCC1m.txt
+      # data_file: ${paths.data_dir}/dasm/edges/val/v1vanwinklelightTrainCC1m.txt
+      data_file: ${paths.data_dir}/dasm/edges_aho/val/v1vanwinklelightTrainCC1m.txt
       sep_token: .
       min_t: 0.0
       chain_id_offset: 2
 
-sep_token: .
 vocab: ${vocab}
-mask_prob: 0.15
-random_token_prob: 0.0
-leave_unmasked_prob: 0.0
-embed_x_per_chain: true
-permute_chain_order: false
+
+## for peint dataset
+# sep_token: .
+# mask_prob: 0.15
+# random_token_prob: 0.0
+# leave_unmasked_prob: 0.0
+# embed_x_per_chain: true
+# permute_chain_order: false
+
+## for ctmc dataset
+random_cherry_order: false

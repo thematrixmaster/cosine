@@ -52,10 +52,13 @@ def diagonalize_reversible_Q(
     # Symmetrize: Q_sym = diag(√π) @ Q @ diag(1/√π)
     Q_sym = torch.diag_embed(pi_sqrt) @ Q @ torch.diag_embed(pi_sqrt_inv)
     Q_sym = 0.5 * (Q_sym + Q_sym.transpose(-2, -1))  # Enforce symmetry
-    
+    Q_sum_dtype = Q_sym.dtype
+
     # Real eigendecomposition (eigenvalues are real for symmetric matrices)
-    eigenvalues, V = torch.linalg.eigh(Q_sym)
-    
+    eigenvalues, V = torch.linalg.eigh(Q_sym.to(torch.float64))
+    eigenvalues = eigenvalues.to(Q_sum_dtype)
+    V = V.to(Q_sum_dtype)
+
     return eigenvalues, V
 
 
@@ -254,6 +257,7 @@ def sample_bridge_states(
     N: Tensor,
     max_n: int,
     eps: float = 1e-10,
+    special_tokens: Optional[Tensor] = None,
 ) -> Tensor:
     """
     Sample intermediate states using ancestral sampling (eq 9):
@@ -267,7 +271,9 @@ def sample_bridge_states(
         j: Ending states (...,)
         N: Number of jumps per element (...,)
         max_n: Maximum jumps
-        
+        eps: Small constant for numerical stability
+        special_tokens: (optional) Tensor of special token indices to avoid sampling
+
     Returns:
         states: (..., max_n+1) sampled states where:
                 states[..., 0] = i
@@ -316,11 +322,15 @@ def sample_bridge_states(
             # Probability: R[current, b] * R^rem[b, j] / R^{rem+1}[current, j]
             prob = R_row * R_rem_to_j / (R_rem1_cj.unsqueeze(-1) + eps)
             probs = torch.where(mask.unsqueeze(-1), prob, probs)
-        
+
+        # Prevent sampling special tokens by zeroing their probabilities
+        if special_tokens is not None:
+            probs.index_fill_(-1, special_tokens, 0.0)
+
         # Normalize and sample
         probs = probs.clamp(min=0)
         probs_sum = probs.sum(dim=-1, keepdim=True)
-        probs = torch.where(probs_sum > eps, probs / probs_sum, torch.ones_like(probs) / V)
+        probs = torch.where(probs_sum > eps, probs / probs_sum, torch.ones_like(probs) / V) # (..., V)
         
         new_state = torch.distributions.Categorical(probs).sample()
         
@@ -346,6 +356,13 @@ class BridgeTrajectory:
         B, T, L = self.sequences.shape
         return f"BridgeTrajectory(batch_size={B}, max_timepoints={T}, seq_len={L})"
 
+    def __get__(self, idx):
+        return BridgeTrajectory(
+            sequences=self.sequences[idx],
+            times=self.times[idx],
+            num_events=self.num_events[idx],
+        )
+
 
 # =============================================================================
 # Markov Bridge Sampler
@@ -367,9 +384,7 @@ class MarkovBridgeSampler:
     Reference: Hobolth & Stone (2009), "Simulation from endpoint-conditioned, 
                continuous-time Markov chains on a finite state space"
     """
-    from peint.models.nets.ctmc import NeuralCTMC
-
-    def __init__(self, model: NeuralCTMC):
+    def __init__(self, model: nn.Module):
         self.model = model
         self.device = next(model.parameters()).device
         self.vocab = model.vocab
@@ -381,7 +396,13 @@ class MarkovBridgeSampler:
             self.vocab.eos_idx,
             self.vocab.unk_idx,
             self.vocab.mask_idx,
+            self.vocab.tokens_to_idx.get("<null_1>", -1),
             self.vocab.tokens_to_idx.get(".", -1),
+            self.vocab.tokens_to_idx.get("X", -1),
+            self.vocab.tokens_to_idx.get("B", -1),
+            self.vocab.tokens_to_idx.get("Z", -1),
+            self.vocab.tokens_to_idx.get("O", -1),
+            self.vocab.tokens_to_idx.get("U", -1),
         ], device=self.device)
         self._special_tokens = self._special_tokens[self._special_tokens >= 0]
 
@@ -440,20 +461,22 @@ class MarkovBridgeSampler:
         
         # ===== Step 6: Sample intermediate states =====
         states = sample_bridge_states(
-            R, R_powers, x, y, N, max_substitutions
+            R, R_powers, x, y, N, max_substitutions, special_tokens=self._special_tokens
         )  # (B, L, max_n+1)
         
         # ===== Step 7: Sample jump times =====
-        # Uniform times in [0, t], then sort
+        # Uniform times in [0, t]
         raw_times = torch.rand(B, L, max_substitutions, device=self.device)
         raw_times = raw_times * t.view(B, 1, 1)
-        jump_times, _ = torch.sort(raw_times, dim=-1)  # (B, L, max_n)
         
-        # Mask invalid times (beyond N for each position)
+        # Mask invalid times (beyond N for each position)        
         time_idx = torch.arange(max_substitutions, device=self.device)
         valid_time = time_idx.view(1, 1, -1) < N.unsqueeze(-1)  # (B, L, max_n)
-        jump_times = torch.where(valid_time, jump_times, torch.full_like(jump_times, float('inf')))
-        
+        raw_times = torch.where(valid_time, raw_times, torch.full_like(raw_times, float('inf')))
+
+        # Sort times to get ordered jump times (infs get pushed to end)
+        jump_times, _ = torch.sort(raw_times, dim=-1)  # (B, L, max_n)
+
         # ===== Step 8: Identify real (non-virtual) jumps =====
         # Virtual jump = self-transition (state doesn't change)
         state_changes = states[:, :, 1:] != states[:, :, :-1]  # (B, L, max_n)
@@ -467,9 +490,9 @@ class MarkovBridgeSampler:
         x: Tensor,
         y: Tensor,
         t: Tensor,
-        states: Tensor,
-        jump_times: Tensor,
-        real_jump: Tensor,
+        states: Tensor,     # (B, L, max_n+1)
+        jump_times: Tensor, # (B, L, max_n)
+        real_jump: Tensor,  # (B, L, max_n)
     ) -> BridgeTrajectory:
         """
         Merge per-position events into full sequence trajectories.

@@ -68,7 +68,7 @@ class CTMCModule(PLMRLitModule):
         # compute perplexity
         ppl = torch.exp(nll.detach())
 
-        return nll, dict(nll=nll, ppl=ppl)
+        return nll, dict(nll=nll.detach(), ppl=ppl.detach())
 
     def validation_step(self, batch, batch_idx: int, dataloader_idx: int = 0):
         """Simplified validation step using unified network interface"""

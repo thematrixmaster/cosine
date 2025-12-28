@@ -82,13 +82,16 @@ class PLMRDataModule(LightningDataModule):
     def _dataloader_template(self, dataset: Dataset[Any], training=True) -> DataLoader[Any]:
         collate_fn = dataset.collater if hasattr(dataset, "collater") else self.collate_fn
         sampler = dataset.sampler() if hasattr(dataset, "sampler") else None
+        num_workers = self.hparams.num_workers if training else 0
+        pin_memory = self.hparams.pin_memory if training else False
+        shuffle = self.hparams.shuffle and training and sampler is None
         return DataLoader(
             dataset=dataset,
             collate_fn=collate_fn,
             batch_size=self.batch_size_per_device,
-            num_workers=self.hparams.num_workers,
-            pin_memory=self.hparams.pin_memory,
-            shuffle=self.hparams.shuffle and training,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            shuffle=shuffle,
             sampler=sampler,
         )
 

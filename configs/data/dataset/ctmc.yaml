@@ -5,16 +5,19 @@ dataset:
   datasets:
     - _target_: evo.dataset.ComplexCherriesDataset
       data_file: ${paths.data_dir}/wyatt/subs/edges_joint/aa/d1.txt
+      # data_file: ${paths.data_dir}/wyatt/aho/d1.txt
       sep_token: .
       min_t: 0.0
       chain_id_offset: 1
     - _target_: evo.dataset.ComplexCherriesDataset
       data_file: ${paths.data_dir}/wyatt/subs/edges_joint/aa/d2.txt
+      # data_file: ${paths.data_dir}/wyatt/aho/d2.txt
       sep_token: .
       min_t: 0.0
       chain_id_offset: 1
     - _target_: evo.dataset.ComplexCherriesDataset
       data_file: ${paths.data_dir}/wyatt/subs/edges_joint/aa/d3.txt
+      # data_file: ${paths.data_dir}/wyatt/aho/d3.txt
       sep_token: .
       min_t: 0.0
       chain_id_offset: 1

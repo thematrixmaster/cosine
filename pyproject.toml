@@ -56,7 +56,6 @@ dependencies = [
     "abnumber>=0.3.0",
     "iglm>=0.1.0",
     "pyhmmer==0.11.2",
-    "anarci",
 ]
 
 [project.optional-dependencies]
@@ -76,7 +75,6 @@ no-build-isolation-package = ['flash-attn', 'setuptools']
 fair-esm = { git = "https://github.com/facebookresearch/esm", rev = "2b369911bb5b4b0dda914521b9475cad1656b2ac" }
 cherryml = { git = "https://github.com/songlab-cal/CherryML" }
 evo = { workspace = true }
-anarci = { path = "../../../../../../scratch/users/stephen.lu/projects/ANARCI", editable = true }
 
 [tool.uv.workspace]
 members = [

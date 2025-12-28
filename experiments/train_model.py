@@ -85,6 +85,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         log_hyperparameters(object_dict)
 
     if cfg.get("ckpt_path"):
+        log.info(f"Loading weights from checkpoint: {cfg.ckpt_path}")
         ckpt = torch.load(cfg.ckpt_path, map_location="cpu", weights_only=False)
         model.load_state_dict(ckpt["state_dict"], strict=False)
 
