@@ -5,26 +5,26 @@ dataset:
   _target_: torch.utils.data.ConcatDataset
   datasets:
     - _target_: evo.dataset.ComplexCherriesDataset
-      # data_file: ${paths.data_dir}/dasm/edges/train/v1jaffePairedCC.txt
-      data_file: ${paths.data_dir}/dasm/edges_aho/train/v1jaffePairedCC.txt
+      data_file: ${paths.data_dir}/dasm/edges/train/v1jaffePairedCC.txt
+      # data_file: ${paths.data_dir}/dasm/edges_aho/train/v1jaffePairedCC.txt
       sep_token: .
       min_t: 0.0
       chain_id_offset: 1
     - _target_: evo.dataset.ComplexCherriesDataset
-      # data_file: ${paths.data_dir}/dasm/edges/train/v1tangCC.txt
-      data_file: ${paths.data_dir}/dasm/edges_aho/train/v1tangCC.txt
+      data_file: ${paths.data_dir}/dasm/edges/train/v1tangCC.txt
+      # data_file: ${paths.data_dir}/dasm/edges_aho/train/v1tangCC.txt
       sep_token: .
       min_t: 0.0
       chain_id_offset: 1
     - _target_: evo.dataset.ComplexCherriesDataset
-      # data_file: ${paths.data_dir}/dasm/edges/train/v1vanwinkleheavyTrainCC.txt
-      data_file: ${paths.data_dir}/dasm/edges_aho/train/v1vanwinkleheavyTrainCC.txt
+      data_file: ${paths.data_dir}/dasm/edges/train/v1vanwinkleheavyTrainCC.txt
+      # data_file: ${paths.data_dir}/dasm/edges_aho/train/v1vanwinkleheavyTrainCC.txt
       sep_token: .
       min_t: 0.0
       chain_id_offset: 1
     - _target_: evo.dataset.ComplexCherriesDataset
-      # data_file: ${paths.data_dir}/dasm/edges/train/v1vanwinklelightTrainCC1m.txt
-      data_file: ${paths.data_dir}/dasm/edges_aho/train/v1vanwinklelightTrainCC1m.txt
+      data_file: ${paths.data_dir}/dasm/edges/train/v1vanwinklelightTrainCC1m.txt
+      # data_file: ${paths.data_dir}/dasm/edges_aho/train/v1vanwinklelightTrainCC1m.txt
       sep_token: .
       min_t: 0.0
       chain_id_offset: 2

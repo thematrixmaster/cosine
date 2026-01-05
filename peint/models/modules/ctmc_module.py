@@ -20,6 +20,7 @@ class CTMCModule(PLMRLitModule):
     def __init__(
         self,
         net: NeuralCTMC,
+        use_snr_loss: bool = False,
         weight_decay: float = 0.01,
         optimizer: torch.optim.Optimizer = partial(torch.optim.AdamW, lr=1e-4),
         scheduler: torch.optim.lr_scheduler = partial(
@@ -42,6 +43,7 @@ class CTMCModule(PLMRLitModule):
             *args,
             **kwargs,
         )
+        self.use_snr_loss = use_snr_loss
 
     def forward(self, x, t, x_sizes, Q=None, *args, **kwargs):
         """Obtain per-site rate matrices and obtain log likelihoods for rows in x"""
@@ -63,12 +65,23 @@ class CTMCModule(PLMRLitModule):
         log_probs: Tensor = self.forward(x, t, x_sizes=x_sizes)  # (B, L, V)
 
         # compute cross entropy loss
-        nll = self.net.criterion(log_probs.transpose(-1, -2), y)  # (B, L)
+        nll = F.cross_entropy(log_probs.transpose(-1, -2), y, ignore_index=self.net.vocab.pad_idx, reduction="none")    # (B, L)
+        mask = (y != self.net.vocab.pad_idx).float() # (B, L)
+        nll_mean = nll.sum() / mask.sum()
 
         # compute perplexity
-        ppl = torch.exp(nll.detach())
+        ppl = torch.exp(nll_mean.detach())
 
-        return nll, dict(nll=nll.detach(), ppl=ppl.detach())
+        # add snr weighting if enabled where snr = 1 / (t + eps)
+        if self.use_snr_loss:
+            snr = 1.0 / (t.detach() + 1e-8) # (B,)
+            snr_mask = snr.unsqueeze(-1) * mask
+            nll = nll * snr_mask.unsqueeze(-1) # (B, L)
+            loss = nll.sum() / snr_mask.sum()
+        else:
+            loss = nll_mean
+
+        return loss, dict(nll=nll_mean.detach(), ppl=ppl.detach())
 
     def validation_step(self, batch, batch_idx: int, dataloader_idx: int = 0):
         """Simplified validation step using unified network interface"""
@@ -88,7 +101,7 @@ class CTMCModule(PLMRLitModule):
 
         # compute perplexity
         padding_mask = y != self.net.vocab.pad_idx
-        mean_nll = nll[padding_mask].mean()
+        mean_nll = nll.sum() / padding_mask.sum()
         ppl = torch.exp(mean_nll)
 
         # get log-likelihoods per time bin
@@ -113,7 +126,14 @@ class CTMCModule(PLMRLitModule):
             self.max_q_per_bin[k].extend(max_q_flat[tbins == b].cpu().numpy())
             self.h_per_bin[k].extend(entropy_flat[tbins == b].cpu().numpy())
 
-        loss = mean_nll
+        if self.use_snr_loss:
+            snr = 1.0 / (t.detach() + 1e-8) # (B,)
+            snr_mask = snr.unsqueeze(-1) * padding_mask
+            nll = nll * snr_mask.unsqueeze(-1) # (B, L)
+            loss = nll.sum() / snr_mask.sum()
+        else:
+            loss = mean_nll
+
         acc = (log_probs.argmax(-1)[padding_mask] == y[padding_mask]).float().mean().item()
 
         loss_info = {

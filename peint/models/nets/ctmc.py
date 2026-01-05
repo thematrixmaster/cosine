@@ -72,13 +72,79 @@ class RateMatrixOutputHead(nn.Module):
         Q = Q - torch.diag_embed(Q.sum(dim=-1))
 
         return Q, log_pi if return_log_pi else log_pi.exp()
+    
+    
+class FreeRateMatrixOutputHead(nn.Module):
+    """
+    Output head that parameterizes a general (non-reversible) CTMC rate matrix.
+    
+    The rate matrix Q satisfies:
+    - Rows sum to zero: Σ_j Q_ij = 0
+    - Off-diagonal entries non-negative: Q_ij ≥ 0 for i ≠ j
+    - No detailed balance constraint (free rate matrix).
+    """
+
+    def __init__(self, embed_dim: int, num_states: int, valid_token_mask: Tensor):
+        super().__init__()
+        self.num_states = num_states
+        self.register_buffer("valid_token_mask", valid_token_mask)  # (V,) boolean
+        mask_2d = valid_token_mask.unsqueeze(0) & valid_token_mask.unsqueeze(1)
+        self.register_buffer("valid_token_2d_mask", mask_2d) # (V, V)
+        
+        # Standard projection components
+        self.dense = nn.Linear(embed_dim, embed_dim)
+        self.layer_norm = ESM1bLayerNorm(embed_dim)
+        
+        # Predicts V*V entries directly. We will mask the diagonal later.
+        self.q_fc = nn.Linear(embed_dim, num_states * num_states)
+
+    def forward(self, hx: Tensor, return_log_pi: bool = False) -> Tuple[Tensor, Tensor]:
+        """
+        Args:
+            hx: Hidden states (B, L, embed_dim)
+            return_log_pi: Whether to return the log of the stationary distribution
+        Returns:
+            Q: Rate matrices (B, L, V, V)
+            pi: Placeholder uniform distributions (B, L, V)
+        """
+        B, L, _ = hx.size()
+        hx = self.layer_norm(gelu(self.dense(hx)))
+
+        # Predict all potential rates, shape: (B, L, V, V)
+        q_logits = self.q_fc(hx).view(B, L, self.num_states, self.num_states)
+        Q_full = F.softplus(q_logits)   # non negative rates
+
+        # Zero out the diagonal (self-transitions are calculated later)
+        eye = torch.eye(self.num_states, device=hx.device, dtype=torch.bool)
+        Q_off_diag = Q_full.masked_fill(eye, 0.0)
+
+        # Mask invalid tokens (e.g., padding or special tokens)
+        Q_off_diag = Q_off_diag * self.valid_token_2d_mask
+
+        # Construct the final Rate Matrix Q
+        row_sums = Q_off_diag.sum(dim=-1)
+        Q = Q_off_diag - torch.diag_embed(row_sums) # Q_ii = - sum_{j!=i} Q_ij
+
+        # Generate uniform distribution over valid tokens only
+        num_valid = self.valid_token_mask.sum()
+        uni_dist = torch.zeros_like(self.valid_token_mask, dtype=hx.dtype)
+        uni_dist = uni_dist.masked_fill(self.valid_token_mask, 1.0 / num_valid)
+        pi = uni_dist.unsqueeze(0).unsqueeze(0).expand(B, L, -1)
+
+        if return_log_pi:
+            log_pi = torch.log(pi + 1e-9) 
+            log_pi = log_pi.masked_fill(~self.valid_token_mask, float('-inf'))
+            return Q, log_pi
+        else:
+            return Q, pi
 
 
 class NeuralCTMC(ESMEncoder):
     """Learn CTMC rate matrix with neural networks."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, reversible: bool = False, *args, **kwargs):
         super().__init__(finetune=True, *args, **kwargs)
+        self.reversible = reversible
         self.in_embedding = self.get_in_embedding()
         self.output_head = self.get_out_lm_head()
         self.criterion = nn.CrossEntropyLoss(reduction="mean", ignore_index=self.vocab.pad_idx)
@@ -95,11 +161,18 @@ class NeuralCTMC(ESMEncoder):
         ])
         valid_token_mask = torch.ones(len(self.vocab), dtype=torch.bool)
         valid_token_mask[_special_tok_idxs] = False
-        return RateMatrixOutputHead(
-            embed_dim=self.embed_dim,
-            num_states=len(self.vocab),
-            valid_token_mask=valid_token_mask,
-        )
+        if self.reversible:
+            return RateMatrixOutputHead(
+                embed_dim=self.embed_dim,
+                num_states=len(self.vocab),
+                valid_token_mask=valid_token_mask,
+            )
+        else:
+            return FreeRateMatrixOutputHead(
+                embed_dim=self.embed_dim,
+                num_states=len(self.vocab),
+                valid_token_mask=valid_token_mask,
+            )
 
     def forward(self, x: Tensor, x_sizes: Tensor, *args, **kwargs) -> Tuple[Tensor, Tensor]:
         """
