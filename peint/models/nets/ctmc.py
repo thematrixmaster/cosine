@@ -296,6 +296,113 @@ class NeuralCTMCGenerator:
         return y
 
     @torch.no_grad()
+    def generate_with_adapted_gillespie(
+        self,
+        x: Tensor,
+        t: Tensor,
+        x_sizes: Tensor,
+        temperature: float = 1.0,
+        no_special_toks: bool = True,
+        max_decode_steps: int = 1024,
+        use_scalar_steps: bool = False,
+        verbose: bool = False,
+    ) -> Tensor:
+        B, L = x.shape
+        V = len(self.vocab)
+        y = x.clone()
+        
+        target_t = t.view(-1)
+        elapsed_t = torch.zeros_like(target_t)
+        active = torch.ones(B, dtype=torch.bool, device=x.device)
+        dnc_mask = torch.isin(x, self.sp_tok_idxs)
+
+        # Setup scalar stepping if requested
+        if use_scalar_steps:
+            target_t = target_t.int()
+            max_decode_steps = int(target_t.max().item())
+
+        iterator = range(max_decode_steps)
+        if verbose:
+            import tqdm
+            iterator = tqdm.tqdm(iterator)
+
+        for _ in iterator:
+            if not active.any():
+                break
+
+            # 1. Forward pass to get Rate Matrix Q: (B, L, V, V)
+            # We assume Q[b, l, i, j] is the rate of transitioning from i -> j at pos l
+            Q, _ = self.forward(y, x_sizes=x_sizes)
+            
+            # 2. Extract rates for the CURRENT state at every position
+            # Create indices for advanced indexing
+            batch_idx = torch.arange(B, device=x.device)[:, None]
+            seq_idx = torch.arange(L, device=x.device)[None, :]
+            
+            # transition_rates shape: (B, L, V)
+            transition_rates = Q[batch_idx, seq_idx, y]
+
+            # 3. Mask invalid transitions
+            # Zero out self-transitions (diagonal)
+            transition_rates.scatter_(2, y.unsqueeze(-1), 0.0)
+            
+            if no_special_toks:
+                # Zero out transitions TO special tokens
+                sp_mask = torch.zeros((1, 1, V), device=x.device, dtype=torch.bool)
+                sp_mask[..., self.sp_tok_idxs] = True
+                transition_rates.masked_fill_(sp_mask, 0.0)
+
+            # Apply temperature if needed (usually applied to logits before exp, 
+            # but if Q are raw rates, strictly speaking temperature acts differently. 
+            # Assuming Q are rates here.)
+            
+            # 4. Calculate Total Exit Rate (Lambda) per sequence
+            # Flatten rates to (B, L*V) to treat the whole sequence as one system
+            flat_rates = transition_rates.view(B, -1)
+            total_exit_rate = flat_rates.sum(dim=-1)  # (B,)
+
+            # 5. Sample Holding Time (tau)
+            # Add epsilon to prevent div by zero
+            safe_rate = total_exit_rate + 1e-10
+            tau = -torch.log(torch.rand_like(safe_rate)) / safe_rate
+
+            # Check if time budget exceeded
+            if use_scalar_steps:
+                # In scalar mode, we step by 1 unit, but we still use rates to pick mutation
+                tau = torch.ones_like(tau)
+            
+            active &= (elapsed_t + tau) <= target_t
+            if not active.any():
+                break
+
+            # 6. Sample Mutation (Gillespie Step)
+            # We need to pick ONE index from the flattened (L*V) rates
+            # torch.multinomial expects probabilities, so we normalize
+            probs = flat_rates / (safe_rate.unsqueeze(-1))
+            
+            # Sample 1 event per batch
+            flat_indices = torch.multinomial(probs, num_samples=1).squeeze(-1)  # (B,)
+
+            # 7. Update Sequence and Time
+            # Decode flattened index back to (position, token)
+            mutation_pos = flat_indices // V
+            mutation_token = flat_indices % V
+
+            # Only update active sequences
+            batch_active_idx = torch.where(active)[0]
+            
+            y[batch_active_idx, mutation_pos[active]] = mutation_token[active]
+            elapsed_t[active] += tau[active]
+
+            # Reset fixed positions (if any)
+            y[dnc_mask] = x[dnc_mask]
+
+            if verbose:
+                print(f"Time: {elapsed_t[active].mean().item():.4f}")
+
+        return y
+
+    @torch.no_grad()
     def generate_with_fake_gillespie(
         self,
         x: Tensor,

@@ -138,7 +138,9 @@ def simulate_evolution_with_rejection_sampling(
         x_toks, time = x_toks.to(device), time.to(device)
 
         # Print update with number of nodes sampled compared to total tree size
-        print(f"Simulated {len(all_sequences)} / {len(tree)} nodes")
+        n_leaves = len(tree)
+        n_total = n_leaves * 2 - 1
+        print(f"Simulated {len(all_sequences)} / {n_total} nodes")
 
         # Simulate child sequences using p(child | parent, time)
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):

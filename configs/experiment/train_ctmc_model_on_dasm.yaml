@@ -49,6 +49,8 @@ vocab:
     name: ESM-1b
 
 model:
+  snr_delta: 1.0
+  use_snr_loss: true
   compile: false
   weight_decay: 0.01
   optimizer:

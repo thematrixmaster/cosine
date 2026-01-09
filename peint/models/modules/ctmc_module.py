@@ -20,6 +20,7 @@ class CTMCModule(PLMRLitModule):
     def __init__(
         self,
         net: NeuralCTMC,
+        snr_delta: float = 0.0,
         use_snr_loss: bool = False,
         weight_decay: float = 0.01,
         optimizer: torch.optim.Optimizer = partial(torch.optim.AdamW, lr=1e-4),
@@ -43,6 +44,7 @@ class CTMCModule(PLMRLitModule):
             *args,
             **kwargs,
         )
+        self.snr_delta = snr_delta
         self.use_snr_loss = use_snr_loss
 
     def forward(self, x, t, x_sizes, Q=None, *args, **kwargs):
@@ -74,9 +76,9 @@ class CTMCModule(PLMRLitModule):
 
         # add snr weighting if enabled where snr = 1 / (t + eps)
         if self.use_snr_loss:
-            snr = 1.0 / (t.detach() + 1e-8) # (B,)
+            snr = (1.0 / (t.detach() + self.snr_delta)).reshape(-1,)
             snr_mask = snr.unsqueeze(-1) * mask
-            nll = nll * snr_mask.unsqueeze(-1) # (B, L)
+            nll = nll * snr_mask # (B, L)
             loss = nll.sum() / snr_mask.sum()
         else:
             loss = nll_mean
@@ -127,9 +129,9 @@ class CTMCModule(PLMRLitModule):
             self.h_per_bin[k].extend(entropy_flat[tbins == b].cpu().numpy())
 
         if self.use_snr_loss:
-            snr = 1.0 / (t.detach() + 1e-8) # (B,)
+            snr = (1.0 / (t.detach() + self.snr_delta)).reshape(-1,) # (B,)
             snr_mask = snr.unsqueeze(-1) * padding_mask
-            nll = nll * snr_mask.unsqueeze(-1) # (B, L)
+            nll = nll * snr_mask # (B, L)
             loss = nll.sum() / snr_mask.sum()
         else:
             loss = mean_nll
