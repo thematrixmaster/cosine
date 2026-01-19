@@ -165,3 +165,4 @@ external
 notebooks/gen_eval
 notebooks/inf_eval
 notebooks/igfold_out
+scripts/guidance/csvs

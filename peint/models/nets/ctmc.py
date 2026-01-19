@@ -1,12 +1,15 @@
-from typing import Tuple
+from typing import Tuple, Optional, Callable
 from tqdm import tqdm
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch import Tensor
 import torch.nn.functional as F
+from scipy.special import ndtr  # Normal CDF
 
 from esm.modules import ESM1bLayerNorm, gelu
+from evo.oracles import DifferentiableOracle, GaussianOracle
 from peint.models.nets.peint import ESMEncoder
 from peint.models.frameworks.ctmc import MarkovBridgeSampler, BridgeTrajectory
 
@@ -279,7 +282,7 @@ class NeuralCTMCGenerator:
             t: time tensor of shape (B,) or (B, 1)
             x_sizes: size of each chain in x (B, L)
         Returns
-            y ~ exp(Q*t)[x,:]
+            y ~ exp(Q*t)[x,:] of shape (B, L)
         """
         Q, _ = self.forward(x, x_sizes=x_sizes)
         log_probs = self.log_Px(self.exp_Qt(Q, t), x)  # (B, L, V)
@@ -306,9 +309,41 @@ class NeuralCTMCGenerator:
         max_decode_steps: int = 1024,
         use_scalar_steps: bool = False,
         verbose: bool = False,
+        mask: Optional[Tensor] = None,
+        **kwargs,
     ) -> Tensor:
+        """Generate sequences via Gillespie algorithm with optional region masking.
+
+        Args:
+            x: Input sequences (B, L)
+            t: Target branch lengths (B,)
+            x_sizes: Sequence lengths (B,)
+            temperature: Sampling temperature (default: 1.0)
+            no_special_toks: Prevent transitions to special tokens (default: True)
+            max_decode_steps: Maximum Gillespie steps (default: 1024)
+            use_scalar_steps: Use integer time steps (default: False)
+            verbose: Print progress (default: False)
+            mask: Optional boolean tensor (B, L) restricting mutations to specific regions.
+                  When provided, mutations can only occur at positions where mask=True.
+                  Holding time calculation still uses ALL sites (masked and unmasked).
+                  Default: None (no restriction)
+
+        Returns:
+            Generated sequences (B, L)
+
+        Raises:
+            ValueError: If mask shape doesn't match x shape or if all positions are masked
+        """
         B, L = x.shape
         V = len(self.vocab)
+
+        # Validate mask if provided
+        if mask is not None:
+            if mask.shape != x.shape:
+                raise ValueError(
+                    f"mask shape {mask.shape} doesn't match x shape {x.shape}. "
+                    f"Expected shape: ({B}, {L})"
+                )
         y = x.clone()
         
         target_t = t.view(-1)
@@ -338,14 +373,12 @@ class NeuralCTMCGenerator:
             # Create indices for advanced indexing
             batch_idx = torch.arange(B, device=x.device)[:, None]
             seq_idx = torch.arange(L, device=x.device)[None, :]
-            
-            # transition_rates shape: (B, L, V)
             transition_rates = Q[batch_idx, seq_idx, y]
 
             # 3. Mask invalid transitions
             # Zero out self-transitions (diagonal)
             transition_rates.scatter_(2, y.unsqueeze(-1), 0.0)
-            
+
             if no_special_toks:
                 # Zero out transitions TO special tokens
                 sp_mask = torch.zeros((1, 1, V), device=x.device, dtype=torch.bool)
@@ -355,7 +388,7 @@ class NeuralCTMCGenerator:
             # Apply temperature if needed (usually applied to logits before exp, 
             # but if Q are raw rates, strictly speaking temperature acts differently. 
             # Assuming Q are rates here.)
-            
+
             # 4. Calculate Total Exit Rate (Lambda) per sequence
             # Flatten rates to (B, L*V) to treat the whole sequence as one system
             flat_rates = transition_rates.view(B, -1)
@@ -376,11 +409,33 @@ class NeuralCTMCGenerator:
                 break
 
             # 6. Sample Mutation (Gillespie Step)
-            # We need to pick ONE index from the flattened (L*V) rates
-            # torch.multinomial expects probabilities, so we normalize
-            probs = flat_rates / (safe_rate.unsqueeze(-1))
-            
-            # Sample 1 event per batch
+            # Apply region mask if provided (affects mutation sampling only, NOT holding time)
+            if mask is not None:
+                # Expand mask from (B, L) to (B, L*V) by repeating for each vocab token
+                # mask[b, l] applies to all possible token transitions at position l
+                flat_mask = mask.unsqueeze(-1).expand(-1, -1, V).reshape(B, -1)  # (B, L*V)
+
+                # Zero out rates for masked-out positions
+                masked_flat_rates = flat_rates.masked_fill(~flat_mask, 0.0)
+
+                # Check for sequences with no valid mutation positions
+                masked_sum = masked_flat_rates.sum(dim=-1)  # (B,)
+                has_no_valid_positions = masked_sum < 1e-10
+
+                if has_no_valid_positions.any():
+                    invalid_batch_indices = torch.where(has_no_valid_positions)[0].tolist()
+                    raise ValueError(
+                        f"Sequences at batch indices {invalid_batch_indices} have no valid "
+                        f"mutation positions (all positions are masked). Cannot sample mutations."
+                    )
+
+                # Normalize to get probabilities
+                probs = masked_flat_rates / masked_sum.unsqueeze(-1)
+            else:
+                # No mask: use all rates (original behavior)
+                probs = flat_rates / (safe_rate.unsqueeze(-1))
+
+            # Sample 1 event per sequence
             flat_indices = torch.multinomial(probs, num_samples=1).squeeze(-1)  # (B,)
 
             # 7. Update Sequence and Time
@@ -390,7 +445,6 @@ class NeuralCTMCGenerator:
 
             # Only update active sequences
             batch_active_idx = torch.where(active)[0]
-            
             y[batch_active_idx, mutation_pos[active]] = mutation_token[active]
             elapsed_t[active] += tau[active]
 
@@ -398,87 +452,462 @@ class NeuralCTMCGenerator:
             y[dnc_mask] = x[dnc_mask]
 
             if verbose:
-                print(f"Time: {elapsed_t[active].mean().item():.4f}")
+                print(f"Time: {elapsed_t[active].min().item():.4f}")
 
         return y
 
-    @torch.no_grad()
-    def generate_with_fake_gillespie(
+    def generate_with_guided_gillespie(
         self,
         x: Tensor,
         t: Tensor,
         x_sizes: Tensor,
+        oracle: GaussianOracle,
+        guidance_strength: float = 1.0,
         temperature: float = 1.0,
         no_special_toks: bool = True,
         max_decode_steps: int = 1024,
         use_scalar_steps: bool = False,
+        use_taylor_approx: bool = True,
+        oracle_chunk_size: int = 5000,
         verbose: bool = False,
+        mask: Optional[Tensor] = None,
     ) -> Tensor:
         """
-        Gillespie simulation: iteratively sample mutations until time t is reached.
+        Generates sequences using oracle-guided Gillespie sampling with optional region masking.
 
-        At each step:
-        1. Sample holding times: τ ~ Exp(-Q[i,i]) = -log(U) / |Q[i,i]|
-        2. Choose position with minimum holding time
-        3. Sample new state: p(j) = Q[i,j] / Σ_k Q[i,k] (k≠i)
-        4. Update sequence and advance time
+        Uses classifier guidance to bias the CTMC rate matrix Q towards sequences
+        with higher oracle scores (e.g., binding affinity).
+
+        Implements Equation 8 from the guidance theory:
+            Q_z[x_i, x_j] = [2 * P(y > μ(x_i) | x_j)]^γ * Q[x_i, x_j]
+
+        where P(y > μ(x_i) | x_j) is the probability that x_j has higher
+        predicted affinity than the parent's mean prediction μ(x_i).
+
+        Args:
+            x: Starting sequences (B, L)
+            t: Target time (B,) or (B, 1)
+            x_sizes: Chain sizes for encoding (B,)
+            oracle: GaussianOracle instance
+            guidance_strength: Guidance parameter γ. Higher values → stronger guidance
+            temperature: Temperature for rate matrix scaling (default: 1.0)
+            no_special_toks: Mask out special tokens from mutations (default: True)
+            max_decode_steps: Maximum number of Gillespie steps (default: 1024)
+            use_scalar_steps: Use fixed step size instead of exponential holding times
+            use_taylor_approx: Use Taylor approximation for oracle (faster but approximate)
+            oracle_chunk_size: Max sequences per oracle call to avoid OOM (default: 5000)
+            verbose: Print progress information
+            mask: Optional boolean tensor (B, L) restricting mutations to specific regions
+                  (e.g., CDR regions of antibodies). When provided, mutations can only occur
+                  at positions where mask=True. Holding time calculation uses ALL sites.
+                  Default: None (no restriction)
+
+        Returns:
+            y: Generated sequences (B*num_samples, L)
+
+        Raises:
+            ValueError: If mask shape doesn't match x shape or if all positions are masked
         """
         B, L = x.shape
+        V = len(self.vocab)
+
+        # Validate mask if provided
+        if mask is not None:
+            if mask.shape != x.shape:
+                raise ValueError(
+                    f"mask shape {mask.shape} doesn't match x shape {x.shape}. "
+                    f"Expected shape: ({B}, {L})"
+                )
         y = x.clone()
+
         target_t = t.view(-1)
-        elapsed_t = torch.zeros_like(t).view(-1)
+        elapsed_t = torch.zeros_like(target_t)
         active = torch.ones(B, dtype=torch.bool, device=x.device)
-        dnc_mask = torch.isin(x, self.sp_tok_idxs)  # (B, L)
+        dnc_mask = torch.isin(x, self.sp_tok_idxs)
 
+        # Setup scalar stepping if requested
         if use_scalar_steps:
-            t = t.int()
-            max_decode_steps = t.int().max().item()
-            if max_decode_steps < 10:
-                print(f"Warning: t is an integer number of discrete steps, but max_decode_steps is less than 10. This may be an error with the scalar steps t.")
+            target_t = target_t.int()
+            max_decode_steps = int(target_t.max().item())
 
-        for _ in tqdm(range(max_decode_steps), disable=not verbose):
+        iterator = range(max_decode_steps)
+        if verbose:
+            import tqdm
+            iterator = tqdm.tqdm(iterator)
+
+        for step_idx in iterator:
             if not active.any():
                 break
 
+            # Forward pass to get Rate Matrix Q: (B, L, V, V)
             Q, _ = self.forward(y, x_sizes=x_sizes)
-            exit_rates = -torch.diagonal(Q, dim1=-2, dim2=-1).gather(2, y.unsqueeze(-1)).squeeze(-1)
 
-            holding_times = -torch.log(torch.rand_like(exit_rates) + 1e-10) / (
-                exit_rates + 1e-10
-            )  # (B, L)
-            holding_times[dnc_mask] = float("inf")  # do not change special tokens
+            # Apply oracle guidance to Q
+            apply_guidance_fn = self._apply_exact_guidance if not use_taylor_approx else self._apply_taylor_guidance
+            Q_guided = apply_guidance_fn(
+                Q=Q, y=y, oracle=oracle, guidance_strength=guidance_strength,
+                verbose=verbose,
+                oracle_chunk_size=oracle_chunk_size,
+            )   # (B, L, V, V)
 
-            min_times, min_pos = holding_times.min(dim=1)
-            active &= (elapsed_t + min_times) < target_t
-            if not active.any():
-                break
+            # Extract transition rates for the CURRENT state at every position: (B, L, V)
+            batch_idx = torch.arange(B, device=x.device)[:, None]
+            seq_idx = torch.arange(L, device=x.device)[None, :]
+            transition_rates = Q_guided[batch_idx, seq_idx, y]
 
-            batch_idx = torch.arange(B, device=y.device)
-            current_state = y[batch_idx, min_pos]
-            rates = Q[batch_idx, min_pos, current_state].clamp(min=0.0)  # (B,)
-            rates[batch_idx, current_state] = 0.0  # do not allow self-transition
+            # Zero out self-transitions (diagonal): (B, L, V)
+            transition_rates.scatter_(2, y.unsqueeze(-1), 0.0)
 
             if no_special_toks:
-                rates[:, self.sp_tok_idxs] = 0.0  # do not allow transition to special tokens
+                # Zero out transitions TO special tokens: (B, L, V)
+                sp_mask = torch.zeros((1, 1, V), device=x.device, dtype=torch.bool)
+                sp_mask[..., self.sp_tok_idxs] = True
+                transition_rates.masked_fill_(sp_mask, 0.0)
 
-            probs = rates / (rates.sum(dim=-1, keepdim=True) + 1e-10)
-            if temperature != 1.0:
-                probs = (probs + 1e-10).pow(1.0 / temperature)
-                probs = probs / probs.sum(dim=-1, keepdim=True)
+            # Calculate Total Exit Rate (Lambda) per sequence: (B,)
+            flat_rates = transition_rates.view(B, -1)
+            total_exit_rate = flat_rates.sum(dim=-1)  # (B,)
 
-            new_state = torch.distributions.Categorical(probs).sample()
-            y[active, min_pos[active]] = new_state[active]
+            # Sample Holding Time (tau): (B,)
+            safe_rate = total_exit_rate + 1e-10
+            tau = -torch.log(torch.rand_like(safe_rate)) / safe_rate
+            
+            # Testing
+            TESTING = False
+            if TESTING:
+                unguided_t_rates = Q[batch_idx, seq_idx, y]
+                unguided_t_rates.scatter_(2, y.unsqueeze(-1), 0.0)
+                unguided_t_rates.masked_fill_(sp_mask, 0.0)
+                unguided_flat_rates = unguided_t_rates.view(B, -1)
+                unguided_safe_rate = unguided_flat_rates.sum(dim=-1) + 1e-10
+                unguided_probs = unguided_flat_rates / (unguided_safe_rate.unsqueeze(-1))
+                guided_probs = flat_rates / (safe_rate.unsqueeze(-1))
+                # check difference in entropy in guided vs unguided dist
+                unguided_entropy = - (unguided_probs * torch.log(unguided_probs + 1e-10)).sum(dim=-1)
+                guided_entropy = - (guided_probs * torch.log(guided_probs + 1e-10)).sum(dim=-1)
+                print(f"Guided Entropy: ", guided_entropy)
+                print("Unguided Entropy: ", unguided_entropy)
+                # breakpoint()
+
+            # Use fixed step size if requested: (B,)
+            if use_scalar_steps:
+                tau = torch.ones_like(tau).int()
+
+            # Update active sequences: (B,)
+            active &= (elapsed_t + tau) <= target_t
+            if not active.any():
+                break
+
+            # Sample Mutation (Gillespie Step)
+            # Apply region mask if provided (affects mutation sampling only, NOT holding time)
+            if mask is not None:
+                # Expand mask from (B, L) to (B, L*V) by repeating for each vocab token
+                # mask[b, l] applies to all possible token transitions at position l
+                flat_mask = mask.unsqueeze(-1).expand(-1, -1, V).reshape(B, -1)  # (B, L*V)
+
+                # Zero out rates for masked-out positions
+                masked_flat_rates = flat_rates.masked_fill(~flat_mask, 0.0)
+
+                # Check for sequences with no valid mutation positions
+                masked_sum = masked_flat_rates.sum(dim=-1)  # (B,)
+                has_no_valid_positions = masked_sum < 1e-10
+
+                if has_no_valid_positions.any():
+                    invalid_batch_indices = torch.where(has_no_valid_positions)[0].tolist()
+                    raise ValueError(
+                        f"Sequences at batch indices {invalid_batch_indices} have no valid "
+                        f"mutation positions (all positions are masked). Cannot sample mutations."
+                    )
+
+                # Normalize to get probabilities
+                probs = masked_flat_rates / masked_sum.unsqueeze(-1)
+            else:
+                # No mask: use all rates (original behavior)
+                probs = flat_rates / (safe_rate.unsqueeze(-1))
+
+            flat_indices = torch.multinomial(probs, num_samples=1).squeeze(-1)  # (B,)
+            if TESTING:
+                print(f"Sampled mutation index: ", flat_indices)
+                # breakpoint()
+
+            # Update sequence and time
+            mutation_pos = flat_indices // V
+            mutation_token = flat_indices % V
+
+            # Update active sequences and time: (B, L)
+            batch_active_idx = torch.where(active)[0]
+            y[batch_active_idx, mutation_pos[active]] = mutation_token[active]
+            elapsed_t[active] += tau[active]
+
+            # Reset fixed positions (if any): (B, L)
             y[dnc_mask] = x[dnc_mask]
 
-            if use_scalar_steps:
-                elapsed_t[active] += 1
-            else:
-                elapsed_t[active] += min_times[active]
-
             if verbose:
-                print(f"Time: {elapsed_t[active].mean().item():.4f}, Sequence: {self.vocab.decode(y[active])}")
+                print(f"Step {step_idx}: Time={elapsed_t[active].min().item():.4f}")
 
         return y
+
+    def _apply_exact_guidance(
+        self,
+        Q: Tensor,
+        y: Tensor,
+        oracle: GaussianOracle,
+        guidance_strength: float,
+        verbose: bool = False,
+        oracle_chunk_size: int = 5000,
+        *args,
+        **kwargs,
+    ) -> Tensor:
+        """
+        Apply oracle guidance by evaluating on all single mutants (exact method).
+        
+        Vectorized version: collects ALL mutants across ALL sequences and makes
+        chunked oracle calls for efficiency while avoiding OOM errors.
+
+        Args:
+            Q: Rate matrix (B, L, V, V)
+            y: Current sequences (B, L)
+            oracle: BaseOracle or DifferentiableOracle instance
+            guidance_strength: Guidance parameter γ
+            verbose: Print info
+            oracle_chunk_size: Maximum number of sequences per oracle call (default: 5000)
+
+        Returns:
+            Q_guided: Guided rate matrix (B, L, V, V)
+        """
+        B, L, V, _ = Q.shape
+        Q_guided = Q.clone()
+
+        # Convert current sequences to strings
+        parent_seqs = self._sequences_to_strings(y)
+
+        # Evaluate oracle on parent sequences
+        parent_means, _ = oracle.predict_batch(parent_seqs)
+        parent_means = torch.tensor(parent_means, device=Q.device, dtype=torch.float32)
+
+        if verbose:
+            print(f"[Exact Guidance] Parent mean scores: {parent_means.cpu().numpy()}")
+
+        # VECTORIZED: Generate ALL mutants for ALL sequences at once
+        all_mutant_seqs = []
+        mutant_metadata = []  # (batch_idx, position, token)
+        seq_to_indices = {}  # Map unique sequences to their indices for deduplication
+
+        for b in range(B):
+            for l in range(L):
+                for v in range(V):
+                    if v == y[b, l].item():
+                        # Skip self-transitions
+                        continue
+                    # Create mutant sequence
+                    mutant = y[b].clone()
+                    mutant[l] = v
+                    mutant_seq_str = self.vocab.decode_single_sequence(mutant.cpu().numpy())
+
+                    # Track which index this sequence maps to
+                    if mutant_seq_str not in seq_to_indices:
+                        seq_to_indices[mutant_seq_str] = len(all_mutant_seqs)
+                        all_mutant_seqs.append(mutant_seq_str)
+
+                    mutant_metadata.append((b, l, v, seq_to_indices[mutant_seq_str]))
+
+        if len(all_mutant_seqs) == 0:
+            return Q_guided
+        
+        # CHUNKED oracle calls to avoid OOM
+        num_mutants = len(all_mutant_seqs)
+        num_chunks = (num_mutants + oracle_chunk_size - 1) // oracle_chunk_size
+
+        if verbose:
+            print(f"[Exact Guidance] Evaluating {num_mutants} mutants in {num_chunks} chunk(s) of size {oracle_chunk_size}")
+    
+        mutant_means_list = []
+        mutant_variances_list = []
+        
+        for chunk_idx in range(num_chunks):
+            start_idx = chunk_idx * oracle_chunk_size
+            end_idx = min(start_idx + oracle_chunk_size, num_mutants)
+            chunk_seqs = all_mutant_seqs[start_idx:end_idx]
+
+            chunk_means, chunk_variances = oracle.predict_batch(chunk_seqs)
+            mutant_means_list.append(chunk_means)
+            mutant_variances_list.append(chunk_variances)
+
+        # Concatenate results from all chunks
+        mutant_means = np.concatenate(mutant_means_list)
+        mutant_variances = np.concatenate(mutant_variances_list)
+        
+        mutant_means = torch.tensor(mutant_means, device=Q.device, dtype=torch.float32)
+        mutant_variances = torch.tensor(mutant_variances, device=Q.device, dtype=torch.float32)
+        
+        # Compute guidance weights for all mutants at once
+        # Expand parent_means to match each mutant
+        parent_means_expanded = torch.tensor(
+            [parent_means[b].item() for b, l, v, seq_idx in mutant_metadata],
+            device=Q.device, dtype=torch.float32
+        )
+
+        # Map unique sequence indices to their predictions
+        mutant_means_expanded = torch.tensor(
+            [mutant_means[seq_idx].item() for b, l, v, seq_idx in mutant_metadata],
+            device=Q.device, dtype=torch.float32
+        )
+        mutant_variances_expanded = torch.tensor(
+            [mutant_variances[seq_idx].item() for b, l, v, seq_idx in mutant_metadata],
+            device=Q.device, dtype=torch.float32
+        )
+
+        z_scores = (parent_means_expanded - mutant_means_expanded) / torch.sqrt(mutant_variances_expanded + 1e-8)
+        z_scores_np = z_scores.cpu().numpy()
+
+        # Use scipy's ndtr for normal CDF (more stable than torch)
+        probs = 1.0 - ndtr(z_scores_np)
+        guidance_weights = (2.0 * probs) ** guidance_strength
+        guidance_weights = torch.tensor(guidance_weights, device=Q.device, dtype=torch.float32)
+
+        # Apply guidance weights to Q (vectorized)
+        # Extract batch indices, positions, and tokens from metadata
+        batch_indices = torch.tensor([b for b, l, v, seq_idx in mutant_metadata], device=Q.device, dtype=torch.long)
+        position_indices = torch.tensor([l for b, l, v, seq_idx in mutant_metadata], device=Q.device, dtype=torch.long)
+        to_tokens = torch.tensor([v for b, l, v, seq_idx in mutant_metadata], device=Q.device, dtype=torch.long)
+
+        # Get current tokens for each mutant
+        from_tokens = y[batch_indices, position_indices]
+
+        # Vectorized multiplication: Q_guided[b, l, current_token, v] *= weight
+        Q_guided[batch_indices, position_indices, from_tokens, to_tokens] *= guidance_weights
+
+        return Q_guided
+
+    def _apply_taylor_guidance(
+        self,
+        Q: Tensor,
+        y: Tensor,
+        oracle: GaussianOracle,
+        guidance_strength: float,
+        verbose: bool = False,
+        *args,
+        **kwargs,
+    ) -> Tensor:
+        """
+        Apply oracle guidance using Taylor approximation (gradient-based).
+
+        Implements Eq 9:
+        weight = [2 * Phi( (Δμ) / σ )]^γ
+        where Δμ ≈ ∇μ(x) · (x_mutant - x_parent)
+
+        Complexity: O(B) backward passes instead of O(B*L*V) forward passes.
+
+        Args:
+            Q: Rate matrix (B, L, V, V)
+            y: Current sequences (B, L)
+            oracle: Must implement compute_fitness_gradient()
+            guidance_strength: Gamma factor
+        """
+        # Ensure oracle supports gradient computation
+        if not hasattr(oracle, "compute_fitness_gradient"):
+             raise ValueError("Oracle provided to _apply_taylor_guidance must implement 'compute_fitness_gradient'.")
+
+        B, L, V, _ = Q.shape
+        Q_guided = Q.clone()
+        
+        # Convert indices to strings for the oracle
+        seq_strs = self._sequences_to_strings(y)
+        
+        if verbose:
+            print(f"[Taylor Guidance] Computing gradients for {B} sequences...")
+
+        # Process batch
+        # Note: We loop over B because gradients are typically computed per-sample 
+        # or require specific graph retention which is tricky to fully vectorize 
+        # without a custom batch-grad oracle implementation.
+        for b in range(B):
+            # 1. Compute Gradients and Variance (1 backward pass)
+            # grads: (L, V_oracle) matrix where grads[l, v] is d(score)/d(one_hot[l, v])
+            # variance: scalar estimate of σ²(x)
+            grads_oracle_np, variance_val = oracle.compute_fitness_gradient(seq_strs[b])
+
+            # Map gradients from oracle vocab (25 AAs) to CTMC vocab (33 tokens with special tokens)
+            # Create mapping from CTMC vocab indices to oracle vocab indices
+            from evo.oracles.covid_model import AA_VOCAB as ORACLE_VOCAB
+
+            L_seq = grads_oracle_np.shape[0]  # Length without special tokens (e.g., 119)
+            grads = torch.zeros(L, V, device=Q.device, dtype=Q.dtype)  # (L_full, V_ctmc) where L_full includes special tokens (e.g., 121)
+
+            # Build mapping from full sequence positions to amino acid positions
+            # aa_positions[i] = position in y[b] for the i-th amino acid in the decoded sequence
+            valid_aas = set("ARNDCQEGHILKMFPSTWYV")
+            aa_positions = []
+            for pos_idx, token_idx in enumerate(y[b]):
+                token = self.vocab.token(token_idx.item())
+                if token in valid_aas:
+                    aa_positions.append(pos_idx)
+
+            # Verify mapping is correct
+            if len(aa_positions) != L_seq:
+                raise ValueError(
+                    f"Mismatch: decoded sequence has {L_seq} amino acids but found "
+                    f"{len(aa_positions)} amino acid positions in y[b]. "
+                    f"Sequence length: {L}, vocab tokens: {[self.vocab.token(t.item()) for t in y[b]]}"
+                )
+
+            # Map oracle gradients to the full sequence positions
+            # grads_oracle_np[aa_idx, v_oracle] is the gradient for the aa_idx-th amino acid
+            # This should go to position aa_positions[aa_idx] in the full sequence
+            # Convert oracle gradients to torch tensor once
+            grads_oracle_torch = torch.from_numpy(grads_oracle_np).to(device=Q.device, dtype=Q.dtype)
+
+            for v_ctmc in range(V):
+                aa = self.vocab.token(v_ctmc)
+                if aa in ORACLE_VOCAB:
+                    v_oracle = ORACLE_VOCAB[aa]
+                    for aa_idx in range(L_seq):
+                        full_pos = aa_positions[aa_idx]
+                        grads[full_pos, v_ctmc] = grads_oracle_torch[aa_idx, v_oracle]
+                # else: gradient remains 0 for special tokens
+
+            sigma = torch.tensor(np.sqrt(variance_val + 1e-10), device=Q.device, dtype=Q.dtype)
+
+            # 2. Compute Δμ for all potential mutations
+            # We only care about transitions FROM the current state y[b]
+            # Δμ(u->v) = Gradient(v) - Gradient(u)
+            
+            current_indices = y[b] # (L,)
+            
+            # Get the gradient value of the CURRENT amino acid at each position
+            # gather requires matching dims, so we unsqueeze to (L, 1)
+            current_grads = grads.gather(1, current_indices.unsqueeze(-1)) # (L, 1)
+            
+            # Broadcast subtract: (L, V) - (L, 1) -> (L, V)
+            # This gives us the predicted change in fitness for mutating to any token v
+            delta_mu = grads - current_grads
+            
+            # 3. Calculate Guidance Weights
+            # Z-score = Δμ / σ
+            z_scores = delta_mu / sigma
+            
+            # Compute CDF Phi(z)
+            # torch.special.ndtr is the standard normal CDF
+            probs = torch.special.ndtr(z_scores)
+            
+            # Weight = (2 * Prob)^γ
+            weights = (2.0 * probs).pow(guidance_strength) # (L, V)
+
+            # 4. Update Rate Matrix
+            # Q is (B, L, V, V) where last dims are (from, to).
+            # We update the row corresponding to transition FROM current_indices.
+            
+            # Create row indices [0, 1, ... L-1]
+            l_indices = torch.arange(L, device=Q.device)
+            
+            # Update: Q[b, l, current_token, :] *= weights[l, :]
+            Q_guided[b, l_indices, current_indices, :] *= weights
+
+        return Q_guided
+
+    def _sequences_to_strings(self, seqs: Tensor) -> list[str]:
+        """Convert batch of sequence tensors to list of strings."""
+        return self.vocab.decode(seqs)
     
     @torch.no_grad()
     def sample_markov_bridge(

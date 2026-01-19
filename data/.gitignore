@@ -3,6 +3,7 @@
 /sets_cached/*
 /wyatt/**
 /oas/**
+/naive_oas/**
 /uniref/**
 /flab/*
 /dasm/*
@@ -22,6 +23,7 @@ uniref50
 dasm
 wyatt
 oas
+naive_oas
 flab
 tr_rosetta
 tr_rosetta_15k_aligned

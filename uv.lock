@@ -173,11 +173,6 @@ wheels = [
 ]
 
 [[package]]
-name = "anarci"
-version = "1.3"
-source = { editable = "../../../../../../scratch/users/stephen.lu/projects/ANARCI" }
-
-[[package]]
 name = "anarcii"
 version = "2.0.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1187,12 +1182,14 @@ dependencies = [
     { name = "abnumber" },
     { name = "biopython" },
     { name = "fair-esm" },
+    { name = "iglm" },
     { name = "matplotlib" },
     { name = "netam" },
     { name = "numba" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "pre-commit" },
+    { name = "promb" },
     { name = "pyarrow" },
     { name = "rich" },
     { name = "rootutils" },
@@ -1218,6 +1215,7 @@ requires-dist = [
     { name = "abnumber", specifier = ">=0.4.4" },
     { name = "biopython" },
     { name = "fair-esm", git = "https://github.com/facebookresearch/esm?rev=2b369911bb5b4b0dda914521b9475cad1656b2ac" },
+    { name = "iglm", specifier = ">=0.1.0" },
     { name = "matplotlib" },
     { name = "netam", git = "https://github.com/matsengrp/netam.git" },
     { name = "numba" },
@@ -1225,6 +1223,7 @@ requires-dist = [
     { name = "pandas" },
     { name = "pre-commit", specifier = ">=4.2.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.5.0" },
+    { name = "promb", specifier = ">=1.0.2" },
     { name = "pyarrow" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4.2" },
     { name = "rich" },
@@ -3362,7 +3361,6 @@ version = "0.0.1"
 source = { editable = "." }
 dependencies = [
     { name = "abnumber" },
-    { name = "anarci" },
     { name = "biopython" },
     { name = "black" },
     { name = "cherryml" },
@@ -3417,7 +3415,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "abnumber", specifier = ">=0.3.0" },
-    { name = "anarci", editable = "../../../../../../scratch/users/stephen.lu/projects/ANARCI" },
     { name = "biopython", specifier = ">=1.85" },
     { name = "black", specifier = ">=25.1.0" },
     { name = "cherryml", git = "https://github.com/songlab-cal/CherryML" },
@@ -3623,6 +3620,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/99/b1/85e18ac92afd08c533603e3393977b6bc1443043115a47bb094f3b98f94f/prettytable-3.16.0.tar.gz", hash = "sha256:3c64b31719d961bf69c9a7e03d0c1e477320906a98da63952bc6698d6164ff57", size = 66276, upload-time = "2025-03-24T19:39:04.008Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/02/c7/5613524e606ea1688b3bdbf48aa64bafb6d0a4ac3750274c43b6158a390f/prettytable-3.16.0-py3-none-any.whl", hash = "sha256:b5eccfabb82222f5aa46b798ff02a8452cf530a352c31bddfa29be41242863aa", size = 33863, upload-time = "2025-03-24T19:39:02.359Z" },
+]
+
+[[package]]
+name = "promb"
+version = "1.0.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pandas" },
+    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "scipy", version = "1.16.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e1/bc/8a78638f65becbdc5f22c6766db489726bcaeb3720f10f3b8c03e5effd9f/promb-1.0.2.tar.gz", hash = "sha256:b388f42a25b3945d6c51c2462cae2299627ac2ff301fd69070777cf00990c140", size = 39342567, upload-time = "2025-05-17T13:31:39.84Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/62/b8/6315b46baf27331c4117ceb7aa3ce2c26fee9dd20719378e53717f7033a9/promb-1.0.2-py3-none-any.whl", hash = "sha256:7c14f54ccde18975fced953c54f7acd3c55918b2b14b80f20a0b35f3c721b46f", size = 39339317, upload-time = "2025-05-17T13:31:32.825Z" },
 ]
 
 [[package]]
