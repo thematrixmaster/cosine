@@ -693,12 +693,22 @@ class NeuralCTMCGenerator:
         mutant_metadata = []  # (batch_idx, position, token)
         seq_to_indices = {}  # Map unique sequences to their indices for deduplication
 
+        # Define valid amino acids that the oracle can handle (standard 20 AAs)
+        valid_aas = set("ARNDCQEGHILKMFPSTWYV")
+
         for b in range(B):
             for l in range(L):
                 for v in range(V):
                     if v == y[b, l].item():
                         # Skip self-transitions
                         continue
+
+                    # Skip tokens that are not standard amino acids
+                    # (e.g., special tokens like <eos>, <pad>, gap tokens, extended AAs)
+                    token_str = self.vocab.token(v)
+                    if token_str not in valid_aas:
+                        continue
+
                     # Create mutant sequence
                     mutant = y[b].clone()
                     mutant[l] = v
