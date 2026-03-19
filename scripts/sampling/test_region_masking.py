@@ -111,7 +111,7 @@ def test_region_masking():
 
     # Test 1: Sample without mask
     with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-        y_no_mask = generator.generate_with_adapted_gillespie(
+        y_no_mask = generator.generate_with_gillespie(
             x=x,
             t=t,
             x_sizes=x_sizes,
@@ -144,7 +144,7 @@ def test_region_masking():
     cdr_mask_tensor = torch.from_numpy(cdr_overall_mask).unsqueeze(0).to(device)
 
     with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-        y_cdr_mask = generator.generate_with_adapted_gillespie(
+        y_cdr_mask = generator.generate_with_gillespie(
             x=x,
             t=t,
             x_sizes=x_sizes,
@@ -181,12 +181,13 @@ def test_region_masking():
 
     # Test 3: Guided sampling with CDR mask
     with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-        y_guided_cdr = generator.generate_with_guided_gillespie(
+        y_guided_cdr = generator.generate_with_gillespie(
             x=x,
             t=t,
             x_sizes=x_sizes,
             oracle=oracle,
             guidance_strength=2.0,
+            use_guidance=True,
             temperature=1.0,
             no_special_toks=True,
             max_decode_steps=1000,
@@ -231,7 +232,7 @@ def test_region_masking():
 
     try:
         with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            y_error = generator.generate_with_adapted_gillespie(
+            y_error = generator.generate_with_gillespie(
                 x=x,
                 t=t,
                 x_sizes=x_sizes,
@@ -255,7 +256,7 @@ def test_region_masking():
 
     try:
         with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            y_error = generator.generate_with_adapted_gillespie(
+            y_error = generator.generate_with_gillespie(
                 x=x,
                 t=t,
                 x_sizes=x_sizes,

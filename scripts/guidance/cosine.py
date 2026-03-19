@@ -504,7 +504,7 @@ def main():
 
     # Define generation functions
     def unguided_generate_fn(x: Tensor, t: Tensor, device, p, max_decode_steps, x_sizes, mask=None, **kwargs):
-        return generator.generate_with_adapted_gillespie(
+        return generator.generate_with_gillespie(
             t=t, x=x, x_sizes=x_sizes,
             max_decode_steps=max_decode_steps,
             use_scalar_steps=args.use_discrete_steps,
@@ -512,7 +512,7 @@ def main():
         )
 
     def guided_generate_fn(x: Tensor, t: Tensor, device, p, max_decode_steps, x_sizes, mask=None, **kwargs):
-        return generator.generate_with_guided_gillespie(
+        return generator.generate_with_gillespie(
             t=t, x=x, x_sizes=x_sizes,
             oracle=oracle,
             guidance_strength=args.guidance_strength,
@@ -520,6 +520,7 @@ def main():
             max_decode_steps=max_decode_steps,
             use_scalar_steps=args.use_discrete_steps,
             oracle_chunk_size=args.oracle_chunk_size,
+            use_guidance=True,
             mask=mask,
         )
 

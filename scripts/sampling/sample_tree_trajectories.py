@@ -512,18 +512,19 @@ def main():
 
     # Define sampling functions
     def unguided_generate_fn(x: Tensor, t: Tensor, device, p, max_decode_steps, x_sizes, **kwargs):
-        return generator.generate_with_adapted_gillespie(
+        return generator.generate_with_gillespie(
             t=t, x=x, x_sizes=x_sizes, max_decode_steps=max_decode_steps
         )
 
     def guided_generate_fn(x: Tensor, t: Tensor, device, p, max_decode_steps, x_sizes, **kwargs):
-        return generator.generate_with_guided_gillespie(
+        return generator.generate_with_gillespie(
             t=t, x=x, x_sizes=x_sizes,
             oracle=oracle,
             guidance_strength=args.guidance_strength,
             use_taylor_approx=True,
             max_decode_steps=max_decode_steps,
-            oracle_chunk_size=args.oracle_chunk_size
+            use_guidance=True,
+            oracle_chunk_size=args.oracle_chunk_size,
         )
 
     # Storage for all results

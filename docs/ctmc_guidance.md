@@ -47,7 +47,7 @@ Extended the `CovidOracle` class to support uncertainty estimation:
 
 ### 2. Guided Gillespie Sampling (`peint/models/nets/ctmc.py`)
 
-Added new method `generate_with_guided_gillespie()` to the `NeuralCTMCGenerator` class.
+Use `generate_with_gillespie(use_guidance=True)` to enable oracle guidance in the `NeuralCTMCGenerator` class.
 
 **Key Features:**
 - Oracle evaluation at every Gillespie step
@@ -58,7 +58,7 @@ Added new method `generate_with_guided_gillespie()` to the `NeuralCTMCGenerator`
 - `oracle_fn`: Function that takes list of sequences and returns (means, variances)
 - `guidance_strength`: Guidance parameter γ (default: 1.0)
 - `use_taylor_approx`: Use Taylor approximation (faster but less accurate)
-- Other parameters match `generate_with_adapted_gillespie()`
+- Other parameters match `generate_with_gillespie()`
 
 ### 3. Guidance Methods
 
@@ -268,7 +268,7 @@ Recommended values: 0.5 - 2.0
 
 ## Region-Restricted Sampling
 
-**New Feature (Added):** Both `generate_with_adapted_gillespie()` and `generate_with_guided_gillespie()` now support restricting mutations to specific sequence regions (e.g., CDR regions of antibodies).
+**New Feature (Added):** `generate_with_gillespie()` now supports restricting mutations to specific sequence regions (e.g., CDR regions of antibodies).
 
 ### Overview
 
@@ -297,7 +297,7 @@ cdr_mask = region_masks['CDR_overall']  # boolean numpy array (L,)
 cdr_mask_tensor = torch.from_numpy(cdr_mask).unsqueeze(0).to(device)  # (1, L)
 
 # Sample with CDR-only mutations (unguided)
-y = generator.generate_with_adapted_gillespie(
+y = generator.generate_with_gillespie(
     x=x,
     t=t,
     x_sizes=x_sizes,
@@ -305,11 +305,12 @@ y = generator.generate_with_adapted_gillespie(
 )
 
 # Sample with CDR-only mutations (guided)
-y_guided = generator.generate_with_guided_gillespie(
+y_guided = generator.generate_with_gillespie(
     x=x,
     t=t,
     x_sizes=x_sizes,
     oracle=oracle,
+    use_guidance=True,
     guidance_strength=2.0,
     use_taylor_approx=True,
     mask=cdr_mask_tensor,  # Restrict mutations to CDR regions

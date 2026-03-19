@@ -87,7 +87,7 @@ def test_guided_sampling():
     print(f"{'='*80}")
 
     with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-        y_unguided = generator.generate_with_adapted_gillespie(
+        y_unguided = generator.generate_with_gillespie(
             x=x,
             t=t,
             x_sizes=x_sizes_batch,
@@ -109,13 +109,14 @@ def test_guided_sampling():
 
     try:
         with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            y_guided = generator.generate_with_guided_gillespie(
+            y_guided = generator.generate_with_gillespie(
                 x=x,
                 t=t,
                 x_sizes=x_sizes_batch,
                 oracle=oracle,
                 guidance_strength=1.0,
                 use_taylor_approx=True,
+                use_guidance=True,
                 max_decode_steps=100,
                 verbose=True,
                 oracle_chunk_size=10

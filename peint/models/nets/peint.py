@@ -151,7 +151,8 @@ class ESMEncoder(PretrainedEncoder):
         """Create an ESMEncoder from a pretrained ESM model."""
         import esm
         
-        _esm_model, esm_vocab = esm.pretrained.esm2_t30_150M_UR50D()
+        _esm_model, esm_vocab = esm.pretrained.esm2_t6_8M_UR50D()
+        # _esm_model, esm_vocab = esm.pretrained.esm2_t30_150M_UR50D()
         # _esm_model, esm_vocab = esm.pretrained.esm2_t33_650M_UR50D()
 
         esm_model = ESM2Flash(
@@ -164,12 +165,18 @@ class ESMEncoder(PretrainedEncoder):
         )
 
         ckpt_path = kwargs.pop("ckpt_path", None)
+        load_pretrained = kwargs.pop("load_pretrained", True)
+
         if ckpt_path is not None:
             state_dict = torch.load(ckpt_path, map_location="cpu")["state_dict"]
             esm_model.load_state_dict(state_dict=state_dict, strict=False)
-        else:
+        elif load_pretrained:
+            print("Loading pretrained ESM model from existing weights")
             esm_model.load_state_dict(_esm_model.state_dict(), strict=False)
             del _esm_model
+        else:
+            print("Initializing ESM model from scratch")
+            del _esm_model  # random initialization
 
         evo_vocab = Vocab.from_esm_alphabet(esm_vocab)
         return cls(esm_model=esm_model, vocab=evo_vocab, *args, **kwargs)

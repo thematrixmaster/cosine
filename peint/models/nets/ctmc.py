@@ -299,7 +299,7 @@ class NeuralCTMCGenerator:
         return y
 
     @torch.no_grad()
-    def generate_with_adapted_gillespie(
+    def generate_with_gillespie(
         self,
         x: Tensor,
         t: Tensor,
@@ -310,197 +310,40 @@ class NeuralCTMCGenerator:
         use_scalar_steps: bool = False,
         verbose: bool = False,
         mask: Optional[Tensor] = None,
-        **kwargs,
-    ) -> Tensor:
-        """Generate sequences via Gillespie algorithm with optional region masking.
-
-        Args:
-            x: Input sequences (B, L)
-            t: Target branch lengths (B,)
-            x_sizes: Sequence lengths (B,)
-            temperature: Sampling temperature (default: 1.0)
-            no_special_toks: Prevent transitions to special tokens (default: True)
-            max_decode_steps: Maximum Gillespie steps (default: 1024)
-            use_scalar_steps: Use integer time steps (default: False)
-            verbose: Print progress (default: False)
-            mask: Optional boolean tensor (B, L) restricting mutations to specific regions.
-                  When provided, mutations can only occur at positions where mask=True.
-                  Holding time calculation still uses ALL sites (masked and unmasked).
-                  Default: None (no restriction)
-
-        Returns:
-            Generated sequences (B, L)
-
-        Raises:
-            ValueError: If mask shape doesn't match x shape or if all positions are masked
-        """
-        B, L = x.shape
-        V = len(self.vocab)
-
-        # Validate mask if provided
-        if mask is not None:
-            if mask.shape != x.shape:
-                raise ValueError(
-                    f"mask shape {mask.shape} doesn't match x shape {x.shape}. "
-                    f"Expected shape: ({B}, {L})"
-                )
-        y = x.clone()
-        
-        target_t = t.view(-1)
-        elapsed_t = torch.zeros_like(target_t)
-        active = torch.ones(B, dtype=torch.bool, device=x.device)
-        dnc_mask = torch.isin(x, self.sp_tok_idxs)
-
-        # Setup scalar stepping if requested
-        if use_scalar_steps:
-            target_t = target_t.int()
-            max_decode_steps = int(target_t.max().item())
-
-        iterator = range(max_decode_steps)
-        if verbose:
-            import tqdm
-            iterator = tqdm.tqdm(iterator)
-
-        for _ in iterator:
-            if not active.any():
-                break
-
-            # 1. Forward pass to get Rate Matrix Q: (B, L, V, V)
-            # We assume Q[b, l, i, j] is the rate of transitioning from i -> j at pos l
-            Q, _ = self.forward(y, x_sizes=x_sizes)
-            
-            # 2. Extract rates for the CURRENT state at every position
-            # Create indices for advanced indexing
-            batch_idx = torch.arange(B, device=x.device)[:, None]
-            seq_idx = torch.arange(L, device=x.device)[None, :]
-            transition_rates = Q[batch_idx, seq_idx, y]
-
-            # 3. Mask invalid transitions
-            # Zero out self-transitions (diagonal)
-            transition_rates.scatter_(2, y.unsqueeze(-1), 0.0)
-
-            if no_special_toks:
-                # Zero out transitions TO special tokens
-                sp_mask = torch.zeros((1, 1, V), device=x.device, dtype=torch.bool)
-                sp_mask[..., self.sp_tok_idxs] = True
-                transition_rates.masked_fill_(sp_mask, 0.0)
-
-            # Apply temperature if needed (usually applied to logits before exp, 
-            # but if Q are raw rates, strictly speaking temperature acts differently. 
-            # Assuming Q are rates here.)
-
-            # 4. Calculate Total Exit Rate (Lambda) per sequence
-            # Flatten rates to (B, L*V) to treat the whole sequence as one system
-            flat_rates = transition_rates.view(B, -1)
-            total_exit_rate = flat_rates.sum(dim=-1)  # (B,)
-
-            # 5. Sample Holding Time (tau)
-            # Add epsilon to prevent div by zero
-            safe_rate = total_exit_rate + 1e-10
-            tau = -torch.log(torch.rand_like(safe_rate)) / safe_rate
-
-            # Check if time budget exceeded
-            if use_scalar_steps:
-                # In scalar mode, we step by 1 unit, but we still use rates to pick mutation
-                tau = torch.ones_like(tau)
-            
-            active &= (elapsed_t + tau) <= target_t
-            if not active.any():
-                break
-
-            # 6. Sample Mutation (Gillespie Step)
-            # Apply region mask if provided (affects mutation sampling only, NOT holding time)
-            if mask is not None:
-                # Expand mask from (B, L) to (B, L*V) by repeating for each vocab token
-                # mask[b, l] applies to all possible token transitions at position l
-                flat_mask = mask.unsqueeze(-1).expand(-1, -1, V).reshape(B, -1)  # (B, L*V)
-
-                # Zero out rates for masked-out positions
-                masked_flat_rates = flat_rates.masked_fill(~flat_mask, 0.0)
-
-                # Check for sequences with no valid mutation positions
-                masked_sum = masked_flat_rates.sum(dim=-1)  # (B,)
-                has_no_valid_positions = masked_sum < 1e-10
-
-                if has_no_valid_positions.any():
-                    invalid_batch_indices = torch.where(has_no_valid_positions)[0].tolist()
-                    raise ValueError(
-                        f"Sequences at batch indices {invalid_batch_indices} have no valid "
-                        f"mutation positions (all positions are masked). Cannot sample mutations."
-                    )
-
-                # Normalize to get probabilities
-                probs = masked_flat_rates / masked_sum.unsqueeze(-1)
-            else:
-                # No mask: use all rates (original behavior)
-                probs = flat_rates / (safe_rate.unsqueeze(-1))
-
-            # Sample 1 event per sequence
-            flat_indices = torch.multinomial(probs, num_samples=1).squeeze(-1)  # (B,)
-
-            # 7. Update Sequence and Time
-            # Decode flattened index back to (position, token)
-            mutation_pos = flat_indices // V
-            mutation_token = flat_indices % V
-
-            # Only update active sequences
-            batch_active_idx = torch.where(active)[0]
-            y[batch_active_idx, mutation_pos[active]] = mutation_token[active]
-            elapsed_t[active] += tau[active]
-
-            # Reset fixed positions (if any)
-            y[dnc_mask] = x[dnc_mask]
-
-            if verbose:
-                print(f"Time: {elapsed_t[active].min().item():.4f}")
-
-        return y
-
-    def generate_with_guided_gillespie(
-        self,
-        x: Tensor,
-        t: Tensor,
-        x_sizes: Tensor,
-        oracle: GaussianOracle,
+        use_guidance: bool = False,
+        use_uniform_rates: bool = False,
+        use_independent_sites: bool = False,
+        oracle: Optional[GaussianOracle] = None,
         guidance_strength: float = 1.0,
-        temperature: float = 1.0,
-        no_special_toks: bool = True,
-        max_decode_steps: int = 1024,
-        use_scalar_steps: bool = False,
         use_taylor_approx: bool = True,
         oracle_chunk_size: int = 5000,
-        verbose: bool = False,
-        mask: Optional[Tensor] = None,
+        **kwargs,
     ) -> Tensor:
         """
-        Generates sequences using oracle-guided Gillespie sampling with optional region masking.
-
-        Uses classifier guidance to bias the CTMC rate matrix Q towards sequences
-        with higher oracle scores (e.g., binding affinity).
-
-        Implements Equation 8 from the guidance theory:
-            Q_z[x_i, x_j] = [2 * P(y > μ(x_i) | x_j)]^γ * Q[x_i, x_j]
-
-        where P(y > μ(x_i) | x_j) is the probability that x_j has higher
-        predicted affinity than the parent's mean prediction μ(x_i).
+        Generates sequences using Gillespie sampling with optional region masking and oracle guidance.
 
         Args:
             x: Starting sequences (B, L)
             t: Target time (B,) or (B, 1)
             x_sizes: Chain sizes for encoding (B,)
-            oracle: GaussianOracle instance
-            guidance_strength: Guidance parameter γ. Higher values → stronger guidance
-            temperature: Temperature for rate matrix scaling (default: 1.0)
+            temperature: Sampling temperature (default: 1.0)
             no_special_toks: Mask out special tokens from mutations (default: True)
             max_decode_steps: Maximum number of Gillespie steps (default: 1024)
-            use_scalar_steps: Use fixed step size instead of exponential holding times
-            use_taylor_approx: Use Taylor approximation for oracle (faster but approximate)
+            use_scalar_steps: Use fixed step size instead of exponential holding times (default: False)
+            use_taylor_approx: Use Taylor approximation for oracle (faster but approximate) (default: True)
             oracle_chunk_size: Max sequences per oracle call to avoid OOM (default: 5000)
-            verbose: Print progress information
+            verbose: Print progress information (default: False)
             mask: Optional boolean tensor (B, L) restricting mutations to specific regions
                   (e.g., CDR regions of antibodies). When provided, mutations can only occur
                   at positions where mask=True. Holding time calculation uses ALL sites.
                   Default: None (no restriction)
+            use_guidance: Whether to use oracle guidance (default: False)
+            use_uniform_rates: Dummy testing to use uniform rates before guidance is applied
+            use_independent_sites: Samples a holding time for each site independently, then 
+                  updates the residue at that site only using a matrix exponential. This is
+                  a mixture between the independent sites and Gillespie sampling methods.
+            oracle: GaussianOracle instance (required if use_guidance=True)
+            guidance_strength: Guidance parameter γ. Higher values → stronger guidance
 
         Returns:
             y: Generated sequences (B*num_samples, L)
@@ -510,6 +353,17 @@ class NeuralCTMCGenerator:
         """
         B, L = x.shape
         V = len(self.vocab)
+
+        if use_uniform_rates and verbose:
+            print("WARNING: use_uniform_rates is True. This is a dummy test that will use uniform rates before guidance is applied.")
+
+        # Validate oracle if using guidance
+        if use_guidance and oracle is None:
+            raise ValueError("Oracle is required if use_guidance=True")
+        if use_guidance and not isinstance(oracle, GaussianOracle):
+            raise ValueError("Oracle must be a GaussianOracle instance if use_guidance=True")
+        if use_guidance and use_independent_sites:
+            raise ValueError("use_guidance and use_independent_sites cannot be True at the same time")
 
         # Validate mask if provided
         if mask is not None:
@@ -540,15 +394,28 @@ class NeuralCTMCGenerator:
                 break
 
             # Forward pass to get Rate Matrix Q: (B, L, V, V)
-            Q, _ = self.forward(y, x_sizes=x_sizes)
+            if use_uniform_rates:
+                Q = torch.ones((B, L, V, V), device=x.device) * 1e-3  # (B, L, V, V)
+                if no_special_toks:
+                    Q[:, :, self.sp_tok_idxs, :] = 0.0
+                    Q[:, :, :, self.sp_tok_idxs] = 0.0
+                Q.diagonal(dim1=-2, dim2=-1).fill_(0.0)
+                row_sums = Q.sum(dim=-1)
+                Q.diagonal(dim1=-2, dim2=-1).copy_(-row_sums)
+            else:
+                Q, _ = self.forward(y, x_sizes=x_sizes)
 
-            # Apply oracle guidance to Q
-            apply_guidance_fn = self._apply_exact_guidance if not use_taylor_approx else self._apply_taylor_guidance
-            Q_guided = apply_guidance_fn(
-                Q=Q, y=y, oracle=oracle, guidance_strength=guidance_strength,
-                verbose=verbose,
-                oracle_chunk_size=oracle_chunk_size,
-            )   # (B, L, V, V)
+            # Apply oracle guidance to Q if needed
+            if use_guidance:
+                apply_guidance_fn = self._apply_exact_guidance if not use_taylor_approx else self._apply_taylor_guidance
+                Q_guided = apply_guidance_fn(
+                    Q=Q, y=y, oracle=oracle, guidance_strength=guidance_strength,
+                    verbose=verbose,
+                    oracle_chunk_size=oracle_chunk_size,
+                )   # (B, L, V, V)
+            else:
+                # No guidance: use unguided Q
+                Q_guided = Q
 
             # Extract transition rates for the CURRENT state at every position: (B, L, V)
             batch_idx = torch.arange(B, device=x.device)[:, None]
@@ -564,30 +431,22 @@ class NeuralCTMCGenerator:
                 sp_mask[..., self.sp_tok_idxs] = True
                 transition_rates.masked_fill_(sp_mask, 0.0)
 
-            # Calculate Total Exit Rate (Lambda) per sequence: (B,)
-            flat_rates = transition_rates.view(B, -1)
-            total_exit_rate = flat_rates.sum(dim=-1)  # (B,)
-
-            # Sample Holding Time (tau): (B,)
-            safe_rate = total_exit_rate + 1e-10
-            tau = -torch.log(torch.rand_like(safe_rate)) / safe_rate
-            
-            # Testing
-            TESTING = False
-            if TESTING:
-                unguided_t_rates = Q[batch_idx, seq_idx, y]
-                unguided_t_rates.scatter_(2, y.unsqueeze(-1), 0.0)
-                unguided_t_rates.masked_fill_(sp_mask, 0.0)
-                unguided_flat_rates = unguided_t_rates.view(B, -1)
-                unguided_safe_rate = unguided_flat_rates.sum(dim=-1) + 1e-10
-                unguided_probs = unguided_flat_rates / (unguided_safe_rate.unsqueeze(-1))
-                guided_probs = flat_rates / (safe_rate.unsqueeze(-1))
-                # check difference in entropy in guided vs unguided dist
-                unguided_entropy = - (unguided_probs * torch.log(unguided_probs + 1e-10)).sum(dim=-1)
-                guided_entropy = - (guided_probs * torch.log(guided_probs + 1e-10)).sum(dim=-1)
-                print(f"Guided Entropy: ", guided_entropy)
-                print("Unguided Entropy: ", unguided_entropy)
-                # breakpoint()
+            if use_independent_sites:
+                # Calculate Exit Rate (Lambda_i) per site: (B, L)
+                exit_rates = transition_rates.sum(dim=-1)
+                # Sample Holding Time (tau_i) for each site: (B, L)
+                taus = -torch.log(torch.rand_like(exit_rates) + 1e-10) / (exit_rates + 1e-10)
+                # Select the min and argmin of the holding times 
+                tau, min_tau_idx = taus.min(dim=-1)
+                assert tau.shape == (B,)
+                assert min_tau_idx.shape == (B,)
+            else:
+                # Calculate Total Exit Rate (Lambda) per sequence: (B,)
+                flat_rates = transition_rates.view(B, -1)
+                total_exit_rate = flat_rates.sum(dim=-1)  # (B,)
+                # Sample Holding Time (tau): (B,)
+                safe_rate = total_exit_rate + 1e-10
+                tau = -torch.log(torch.rand_like(safe_rate)) / safe_rate
 
             # Use fixed step size if requested: (B,)
             if use_scalar_steps:
@@ -598,41 +457,63 @@ class NeuralCTMCGenerator:
             if not active.any():
                 break
 
-            # Sample Mutation (Gillespie Step)
-            # Apply region mask if provided (affects mutation sampling only, NOT holding time)
-            if mask is not None:
-                # Expand mask from (B, L) to (B, L*V) by repeating for each vocab token
-                # mask[b, l] applies to all possible token transitions at position l
-                flat_mask = mask.unsqueeze(-1).expand(-1, -1, V).reshape(B, -1)  # (B, L*V)
+            # Sample Mutation Position and Token
+            if use_independent_sites:
+                # Use matrix exponential
+                # Q_site = Q_guided[batch_idx.squeeze(), min_tau_idx]  # (B, V, V)
+                # y_site = y[batch_idx.squeeze(), min_tau_idx]  # (B,)
+                # P_site = torch.matrix_exp(Q_site * tau.reshape(B, 1, 1))    # (B, V, V)
+                # log_probs = torch.log(P_site[batch_idx.squeeze(), y_site] + 1e-8)     # (B, V)
+                # # log_probs[batch_idx.squeeze(), y_site] = -float("inf") # zero out self-transitions
+                # if no_special_toks:
+                #     log_probs[:, self.sp_tok_idxs] = -float("inf")
+                #     log_probs = log_probs - log_probs.logsumexp(dim=-1, keepdim=True)
+                # probs = torch.exp(log_probs / temperature)
 
-                # Zero out rates for masked-out positions
-                masked_flat_rates = flat_rates.masked_fill(~flat_mask, 0.0)
+                # Use normalized rates in current row
+                min_transition_rates = transition_rates[batch_idx.squeeze(), min_tau_idx]
+                probs = min_transition_rates / min_transition_rates.sum(dim=-1, keepdim=True)
 
-                # Check for sequences with no valid mutation positions
-                masked_sum = masked_flat_rates.sum(dim=-1)  # (B,)
-                has_no_valid_positions = masked_sum < 1e-10
+                # Save the mutation position and token
+                mutation_pos = min_tau_idx
+                mutation_token = torch.distributions.Categorical(probs).sample()
 
-                if has_no_valid_positions.any():
-                    invalid_batch_indices = torch.where(has_no_valid_positions)[0].tolist()
-                    raise ValueError(
-                        f"Sequences at batch indices {invalid_batch_indices} have no valid "
-                        f"mutation positions (all positions are masked). Cannot sample mutations."
-                    )
-
-                # Normalize to get probabilities
-                probs = masked_flat_rates / masked_sum.unsqueeze(-1)
+                if mask is not None:
+                    can_mutate_mask = mask[batch_idx, mutation_pos] # true for positions that can be mutated
+                    mutation_token[~can_mutate_mask] = x[batch_idx, mutation_pos][~can_mutate_mask]
             else:
-                # No mask: use all rates (original behavior)
-                probs = flat_rates / (safe_rate.unsqueeze(-1))
+                # Apply region mask if provided (affects mutation sampling only, NOT holding time)
+                if mask is not None:
+                    # Expand mask from (B, L) to (B, L*V) by repeating for each vocab token
+                    # mask[b, l] applies to all possible token transitions at position l
+                    flat_mask = mask.unsqueeze(-1).expand(-1, -1, V).reshape(B, -1)  # (B, L*V)
 
-            flat_indices = torch.multinomial(probs, num_samples=1).squeeze(-1)  # (B,)
-            if TESTING:
-                print(f"Sampled mutation index: ", flat_indices)
-                # breakpoint()
+                    # Zero out rates for masked-out positions
+                    masked_flat_rates = flat_rates.masked_fill(~flat_mask, 0.0)
 
-            # Update sequence and time
-            mutation_pos = flat_indices // V
-            mutation_token = flat_indices % V
+                    # Check for sequences with no valid mutation positions
+                    masked_sum = masked_flat_rates.sum(dim=-1)  # (B,)
+                    has_no_valid_positions = masked_sum < 1e-10
+
+                    if has_no_valid_positions.any():
+                        invalid_batch_indices = torch.where(has_no_valid_positions)[0].tolist()
+                        raise ValueError(
+                            f"Sequences at batch indices {invalid_batch_indices} have no valid "
+                            f"mutation positions (all positions are masked). Cannot sample mutations."
+                        )
+
+                    # Normalize to get probabilities
+                    probs = masked_flat_rates / masked_sum.unsqueeze(-1)
+                else:
+                    # No mask: use all rates (original behavior)
+                    probs = flat_rates / (safe_rate.unsqueeze(-1))
+
+                # Sample 1 event per sequence
+                flat_indices = torch.multinomial(probs, num_samples=1).squeeze(-1)  # (B,)
+
+                # Update sequence and time
+                mutation_pos = flat_indices // V
+                mutation_token = flat_indices % V
 
             # Update active sequences and time: (B, L)
             batch_active_idx = torch.where(active)[0]
@@ -646,7 +527,7 @@ class NeuralCTMCGenerator:
                 print(f"Step {step_idx}: Time={elapsed_t[active].min().item():.4f}")
 
         return y
-
+    
     def _apply_exact_guidance(
         self,
         Q: Tensor,
@@ -679,7 +560,7 @@ class NeuralCTMCGenerator:
         Q_guided = Q.clone()
 
         # Convert current sequences to strings
-        parent_seqs = self._sequences_to_strings(y)
+        parent_seqs = self.vocab.decode(y)
 
         # Evaluate oracle on parent sequences
         parent_means, _ = oracle.predict_batch(parent_seqs)
@@ -822,7 +703,7 @@ class NeuralCTMCGenerator:
         Q_guided = Q.clone()
         
         # Convert indices to strings for the oracle
-        seq_strs = self._sequences_to_strings(y)
+        seq_strs = self.vocab.decode(y)
         
         if verbose:
             print(f"[Taylor Guidance] Computing gradients for {B} sequences...")
@@ -915,10 +796,6 @@ class NeuralCTMCGenerator:
 
         return Q_guided
 
-    def _sequences_to_strings(self, seqs: Tensor) -> list[str]:
-        """Convert batch of sequence tensors to list of strings."""
-        return self.vocab.decode(seqs)
-    
     @torch.no_grad()
     def sample_markov_bridge(
         self,

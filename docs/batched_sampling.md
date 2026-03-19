@@ -20,7 +20,7 @@ x_batch = x.repeat(current_batch_size, 1)  # (1, L) -> (batch_size, L)
 t_batch = t.repeat(current_batch_size)      # (1,) -> (batch_size,)
 x_sizes_batch = x_sizes.repeat(current_batch_size)
 
-y_batch = generator.generate_with_adapted_gillespie(
+y_batch = generator.generate_with_gillespie(
     x=x_batch, t=t_batch, x_sizes=x_sizes_batch,
     ...
 )

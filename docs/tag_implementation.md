@@ -25,11 +25,12 @@ Implemented classifier-guided sampling for CTMCs based on the theoretical framew
 
 **Main Method:**
 ```python
-generate_with_guided_gillespie(
+generate_with_gillespie(
     x, t, x_sizes,
-    oracle_fn,              # Function: sequences → (means, variances)
-    guidance_strength=1.0,   # γ parameter
-    use_taylor_approx=False, # Exact vs Taylor
+    use_guidance=True,
+    oracle=oracle,
+    guidance_strength=1.0,
+    use_taylor_approx=False,
     ...
 )
 ```
@@ -117,7 +118,7 @@ The CTMC model uses FlashAttention which requires fp16/bf16:
 
 ```python
 with (torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16)):
-    y = generator.generate_with_guided_gillespie(...)
+    y = generator.generate_with_gillespie(..., use_guidance=True, oracle=oracle, guidance_strength=1.0, use_taylor_approx=False)
 ```
 
 ### Oracle Device Compatibility
@@ -164,7 +165,7 @@ At each Gillespie step:
    - MC Dropout implementation
 
 2. `peint/models/nets/ctmc.py`
-   - Added `generate_with_guided_gillespie()`
+   - Added `generate_with_gillespie(use_guidance=True)`
    - Implemented exact and Taylor guidance
    - Sequence conversion helpers
 
@@ -221,18 +222,15 @@ from peint.models.nets.ctmc import NeuralCTMCGenerator
 # Load oracle with MC Dropout
 oracle = get_oracle("SARSCoV1", enable_mc_dropout=True, mc_samples=10)
 
-# Oracle wrapper
-def oracle_fn(seqs):
-    return oracle.predict_batch_with_uncertainty(seqs)
-
 # Guided sampling
-y = generator.generate_with_guided_gillespie(
+y = generator.generate_with_gillespie(
     x=seed_tensor,
     t=torch.tensor([0.1]),
     x_sizes=seq_lengths,
-    oracle_fn=oracle_fn,
+    use_guidance=True,
+    oracle=oracle,
     guidance_strength=2.0,
-    use_taylor_approx=True,  # Faster (but still slow)
+    use_taylor_approx=True,
 )
 ```
 

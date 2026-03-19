@@ -60,6 +60,7 @@ model:
 
 net:
   embed_x_per_chain: false
+  load_pretrained: false
   ckpt_path: null
 
 data:

@@ -249,12 +249,13 @@ def main():
                 x_sizes_batch = x_sizes.repeat(current_batch_size)
 
                 with (torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16)):
-                    y_batch = generator.generate_with_guided_gillespie(
+                    y_batch = generator.generate_with_gillespie(
                         x=x_batch,
                         t=t_batch,
                         x_sizes=x_sizes_batch,
                         oracle=oracle,
                         guidance_strength=gamma,
+                        use_guidance=True,
                         temperature=1.0,
                         no_special_toks=True,
                         max_decode_steps=1000,
