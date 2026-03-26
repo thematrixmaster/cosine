@@ -261,6 +261,101 @@ def load_from_old_checkpoint(checkpoint_path: str, device: str = "cpu") -> PEINT
     return module.to(device).eval()
 
 
+def load_from_og_peint_checkpoint(checkpoint_path: str, device: str = "cpu") -> PEINTModule:
+    """Load checkpoint from original protein-evolution codebase (ProtEvoPretrainedTransformerModule).
+
+    This loader handles checkpoints trained with the old protein-evolution codebase, which used
+    a different model structure and state dict format. Key adaptations:
+    - Maps old state dict keys (model.* → net.*)
+    - Configures for single-sequence mode (num_chains=1)
+    - Disables multi-sequence features (chain embeddings)
+
+    Args:
+        checkpoint_path: Path to .ckpt file from protein-evolution training
+        device: Device to load model onto ('cpu', 'cuda', etc.)
+
+    Returns:
+        PEINTModule ready for inference in eval mode
+
+    Example:
+        >>> module = load_from_og_peint_checkpoint("checkpoint.ckpt", device="cuda")
+        >>> vocab = module.net.vocab
+        >>>
+        >>> # Encode sequence (vocab.encode adds BOS/EOS automatically)
+        >>> x = torch.from_numpy(vocab.encode("MKTAY")).unsqueeze(0).cuda()
+        >>> seq_len = x.shape[1]
+        >>>
+        >>> # Create input tensors
+        >>> x_sizes = torch.zeros((1, seq_len), dtype=torch.long, device="cuda")
+        >>> x_sizes[0, 0] = seq_len
+        >>> t = torch.tensor([[0.1]], dtype=torch.float32, device="cuda")
+        >>>
+        >>> # Run inference (use bfloat16 for FlashAttention)
+        >>> with torch.no_grad():
+        >>>     with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        >>>         outputs = module.net(x, x.clone(), t, x_sizes, x_sizes)
+    """
+    import esm
+    from peint.models.nets.esm2 import ESM2Flash
+
+    ckpt = torch.load(checkpoint_path, map_location="cpu")
+    hparams = ckpt["hyper_parameters"]
+
+    # Create ESM encoder matching checkpoint architecture
+    esm_vocab_obj = esm.data.Alphabet.from_architecture("ESM-1b")
+    from evo.tokenization import Vocab
+
+    vocab = Vocab.from_esm_alphabet(esm_vocab_obj)
+
+    flash_esm = ESM2Flash(
+        num_layers=30,
+        embed_dim=640,
+        attention_heads=20,
+        alphabet="ESM-1b",
+        token_dropout=True,
+        dropout_p=hparams.get("dropout_p", 0.0),
+    )
+
+    enc_model = ESMEncoder(vocab=vocab, esm_model=flash_esm, finetune=False, embed_x_per_chain=False)
+
+    # Create PEINT model (single-sequence, no chain embeddings)
+    net = PEINT(
+        enc_model=enc_model,
+        evo_vocab=vocab,
+        embed_dim=hparams["embed_dim"],
+        num_heads=hparams["num_heads"],
+        num_chains=1,
+        num_encoder_layers=hparams["num_encoder_layers"],
+        num_decoder_layers=hparams["num_decoder_layers"],
+        max_len=hparams.get("max_seq_len", 1022),
+        dropout_p=hparams.get("dropout_p", 0.0),
+        use_chain_embedding=False,
+        use_attention_bias=hparams.get("use_attention_bias", True),
+        causal_decoder=True,
+    )
+
+    # Map old state dict keys to new format
+    new_state_dict = {}
+    for key, value in ckpt["state_dict"].items():
+        if not key.startswith("model."):
+            continue
+        new_key = key[6:]  # Remove 'model.' prefix
+        if new_key.startswith("esm."):
+            new_key = "enc_model." + new_key
+        elif new_key.startswith("embedding."):
+            new_key = new_key.replace("embedding.", "in_embedding.")
+        elif new_key.startswith("lm_head."):
+            new_key = new_key.replace("lm_head.", "out_lm_head.")
+        new_state_dict[new_key] = value
+
+    net.load_state_dict(new_state_dict, strict=False)
+
+    # Wrap in Lightning module
+    module = PEINTModule(net=net, weight_decay=hparams.get("weight_decay", 0.01))
+
+    return module.to(device).eval()
+
+
 def load_from_new_checkpoint(checkpoint_path: str, device: str = "cpu") -> PEINTModule:
     """
     Load a PEINTModule from a checkpoint that contains the PEINT model.

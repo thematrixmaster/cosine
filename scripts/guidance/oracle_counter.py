@@ -57,6 +57,10 @@ class OracleCallCounter:
         """
         return self.total_sequences
 
+    def reset_call_count(self):
+        """Reset the oracle call counter to zero."""
+        self.total_sequences = 0
+
     def __call__(self, sequences: Union[str, List[str]], increment: bool = True):
         """Handle callable interface for oracles used as functions."""
         if isinstance(sequences, str):

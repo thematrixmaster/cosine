@@ -192,6 +192,29 @@ def select_oracle_seed(oracle_variant: str, seed_idx: int) -> str:
     return seed_sequence
 
 
+def generate_random_protein_sequence(length: int, seed: int = None) -> str:
+    """Generate a random protein sequence of specified length.
+
+    Parameters
+    ----------
+    length : int
+        Desired sequence length
+    seed : int, optional
+        Random seed for reproducibility
+
+    Returns
+    -------
+    str
+        Random protein sequence using standard amino acids
+    """
+    amino_acids = 'ACDEFGHIKLMNPQRSTVWY'  # Standard 20 amino acids
+    if seed is not None:
+        rng = random.Random(seed)
+        return ''.join(rng.choice(amino_acids) for _ in range(length))
+    else:
+        return ''.join(random.choice(amino_acids) for _ in range(length))
+
+
 def count_mutations(seq1: str, seq2: str) -> int:
     """Count number of mutations between two sequences."""
     return sum(1 for a, b in zip(seq1, seq2) if a != b)
@@ -243,8 +266,9 @@ def sample_single_trajectory(
     n_sequences: int,
     max_decode_steps: int,
     max_retries: int = 100,
-    mask: Optional[Tensor] = None
-) -> tuple[str, int]:
+    mask: Optional[Tensor] = None,
+    return_sampling_time: bool = False
+) -> tuple[str, int] | tuple[str, int, float]:
     """Sample a single trajectory using rejection sampling for length filtering.
 
     Parameters
@@ -267,13 +291,17 @@ def sample_single_trajectory(
         Max rejection sampling attempts
     mask : Tensor, optional
         Boolean mask for region-specific mutations
+    return_sampling_time : bool
+        If True, return sampling time as 3rd element
 
     Returns
     -------
     tuple
-        (sampled_sequence, retry_count)
+        (sampled_sequence, retry_count) or
+        (sampled_sequence, retry_count, sampling_time) if return_sampling_time=True
     """
     root_length = len(seed_seq)
+    total_sampling_time = 0.0
 
     for retry in range(max_retries):
         # Encode seed sequence
@@ -293,6 +321,7 @@ def sample_single_trajectory(
             mask_rep = mask.repeat(n_sequences, 1)
 
         # Generate candidates
+        sampling_start = time.perf_counter()
         with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device.type=="cuda"):
             y_rep = generate_fn(
                 x=x_rep,
@@ -303,6 +332,8 @@ def sample_single_trajectory(
                 x_sizes=x_sizes,
                 mask=mask_rep
             )
+        sampling_end = time.perf_counter()
+        total_sampling_time += (sampling_end - sampling_start)
 
         # Decode candidates
         candidates = []
@@ -314,11 +345,17 @@ def sample_single_trajectory(
         valid_candidates = [s for s in candidates if len(s) == root_length]
 
         if len(valid_candidates) > 0:
-            return random.choice(valid_candidates), retry
+            if return_sampling_time:
+                return random.choice(valid_candidates), retry, total_sampling_time
+            else:
+                return random.choice(valid_candidates), retry
 
     # Fallback: return seed if all retries fail
     print(f"WARNING: All {max_retries} attempts failed length filter, returning seed sequence")
-    return seed_seq, max_retries
+    if return_sampling_time:
+        return seed_seq, max_retries, total_sampling_time
+    else:
+        return seed_seq, max_retries
 
 
 def sample_with_mutation_ceiling(
@@ -332,8 +369,9 @@ def sample_with_mutation_ceiling(
     max_mutations: Optional[int] = None,
     max_retries: int = 100,
     mask: Optional[Tensor] = None,
-    trajectory_idx: int = 0
-) -> tuple[str, int, int]:
+    trajectory_idx: int = 0,
+    return_sampling_time: bool = False
+) -> tuple[str, int, int] | tuple[str, int, int, float]:
     """Sample trajectory with optional mutation ceiling using post-hoc rejection.
 
     Parameters
@@ -360,27 +398,46 @@ def sample_with_mutation_ceiling(
         Boolean mask for region-specific mutations
     trajectory_idx : int
         Trajectory index for error messages
+    return_sampling_time : bool
+        If True, return sampling time as 4th element
 
     Returns
     -------
     tuple
-        (sampled_sequence, n_mutations, total_retries)
+        (sampled_sequence, n_mutations, total_retries) or
+        (sampled_sequence, n_mutations, total_retries, sampling_time) if return_sampling_time=True
     """
     total_retries = 0
+    total_sampling_time = 0.0
 
     for ceiling_retry in range(max_retries):
         # Sample a trajectory
-        sampled_seq, length_retries = sample_single_trajectory(
-            generate_fn=generate_fn,
-            seed_seq=seed_seq,
-            branch_length=branch_length,
-            vocab=vocab,
-            device=device,
-            n_sequences=n_sequences,
-            max_decode_steps=max_decode_steps,
-            max_retries=max_retries,
-            mask=mask
-        )
+        if return_sampling_time:
+            sampled_seq, length_retries, sampling_time = sample_single_trajectory(
+                generate_fn=generate_fn,
+                seed_seq=seed_seq,
+                branch_length=branch_length,
+                vocab=vocab,
+                device=device,
+                n_sequences=n_sequences,
+                max_decode_steps=max_decode_steps,
+                max_retries=max_retries,
+                mask=mask,
+                return_sampling_time=True
+            )
+            total_sampling_time += sampling_time
+        else:
+            sampled_seq, length_retries = sample_single_trajectory(
+                generate_fn=generate_fn,
+                seed_seq=seed_seq,
+                branch_length=branch_length,
+                vocab=vocab,
+                device=device,
+                n_sequences=n_sequences,
+                max_decode_steps=max_decode_steps,
+                max_retries=max_retries,
+                mask=mask
+            )
 
         total_retries += length_retries + 1
 
@@ -389,7 +446,10 @@ def sample_with_mutation_ceiling(
 
         # Check mutation ceiling
         if max_mutations is None or n_mutations <= max_mutations:
-            return sampled_seq, n_mutations, total_retries
+            if return_sampling_time:
+                return sampled_seq, n_mutations, total_retries, total_sampling_time
+            else:
+                return sampled_seq, n_mutations, total_retries
 
     # Fail-safe: if we've exhausted all retries, raise an error
     error_msg = (
