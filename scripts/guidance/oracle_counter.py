@@ -14,6 +14,7 @@ class OracleCallCounter:
         """
         self.oracle = oracle
         self.total_sequences = 0
+        self.__class__ = type('Wrapped' + oracle.__class__.__name__, (OracleCallCounter, oracle.__class__), {})
 
     def __getattr__(self, name):
         return getattr(self.oracle, name)

@@ -80,6 +80,8 @@ def parse_args():
                         help='Oracle variant for seed selection (default: SARSCoV2Beta)')
     parser.add_argument('--oracle-seed-idx', type=int, default=0,
                         help='Index of oracle seed sequence to use (must be binder, default: 0)')
+    parser.add_argument('--seed-seq', type=str, default=None,
+                        help='Custom seed sequence to optimize (overrides oracle-seed-idx if provided)')
 
     # Sampling parameters
     parser.add_argument('--branch-length', type=float, required=True,
@@ -499,11 +501,20 @@ def main():
     generator = NeuralCTMCGenerator(neural_ctmc=net)
     print("Model loaded successfully\n")
 
-    # Select oracle seed (no germline mapping)
-    seed_seq = select_oracle_seed(
-        oracle_variant=args.oracle,
-        seed_idx=args.oracle_seed_idx
-    )
+    # Select oracle seed (no germline mapping) or use custom seed
+    if args.seed_seq is not None:
+        seed_seq = args.seed_seq
+        print(f"\n{'='*80}")
+        print("CUSTOM SEED SEQUENCE")
+        print(f"{'='*80}")
+        print(f"Seed sequence ({len(seed_seq)} aa):")
+        print(f"  {seed_seq}")
+        print(f"{'='*80}\n")
+    else:
+        seed_seq = select_oracle_seed(
+            oracle_variant=args.oracle,
+            seed_idx=args.oracle_seed_idx
+        )
 
     # Create region mask if requested
     mask_tensor = None
@@ -656,7 +667,8 @@ def main():
         oracle_name = args.oracle.replace('SARSCoV', 'SC')
         ceiling_str = f"_maxmut{args.max_mutations}" if args.max_mutations else ""
         mask_str = f"_mask{args.mask_region}" if args.mask_region else ""
-        output_path = f"cosine_{oracle_name}_seed{args.oracle_seed_idx}_t{args.branch_length}{ceiling_str}{mask_str}_{timestamp}.csv"
+        guidance = f"guided{args.guidance_strength}" if args.use_guided else "unguided"
+        output_path = f"cosine_{guidance}_{oracle_name}_seed{args.oracle_seed_idx}_t{args.branch_length}{ceiling_str}{mask_str}_{timestamp}.csv"
     else:
         output_path = args.output_path
 

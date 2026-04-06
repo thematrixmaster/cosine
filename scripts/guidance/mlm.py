@@ -106,6 +106,8 @@ def parse_args():
     # Oracle & Seed
     parser.add_argument('--oracle', type=str, default='SARSCoV2Beta', choices=['SARSCoV1', 'SARSCoV2Beta'])
     parser.add_argument('--oracle-seed-idx', type=int, default=0)
+    parser.add_argument('--seed-seq', type=str, default=None,
+                        help='Custom seed sequence to optimize (overrides oracle-seed-idx if provided)')
     
     # Model Params
     parser.add_argument('--mlm-model', type=str, default='esm2_t6_8M_UR50D')
@@ -118,7 +120,9 @@ def parse_args():
     
     # Constraints
     parser.add_argument('--max-mutations', type=int, default=5)
-    parser.add_argument('--mask-region', type=str, default='CDR_overall')
+    parser.add_argument('--mask-region', type=str, default=None,
+                        choices=['CDR1', 'CDR2', 'CDR3', 'CDR_overall', 'FR1', 'FR2', 'FR3', 'FR4', 'FR_overall', None],
+                        help='Restrict mutations to specific antibody region (default: None, allows all positions)')
     
     # Tech
     parser.add_argument('--save-csv', action='store_true')
@@ -295,7 +299,11 @@ def main():
         precompute_seed_fitnesses=False
     ))
     
-    seed_seq = select_oracle_seed(args.oracle, args.oracle_seed_idx)
+    if args.seed_seq is not None:
+        seed_seq = args.seed_seq
+        print(f"Using custom seed sequence ({len(seed_seq)} aa)")
+    else:
+        seed_seq = select_oracle_seed(args.oracle, args.oracle_seed_idx)
     seed_fitness = oracle.predict(seed_seq, increment=False)[0]
     print(f"Seed Fitness: {seed_fitness:.4f}")
     

@@ -48,6 +48,8 @@ def parse_args():
     # Oracle & Seed
     parser.add_argument('--oracle', type=str, default='SARSCoV2Beta', choices=['SARSCoV1', 'SARSCoV2Beta'])
     parser.add_argument('--oracle-seed-idx', type=int, default=0)
+    parser.add_argument('--seed-seq', type=str, default=None,
+                        help='Custom seed sequence to optimize (overrides oracle-seed-idx if provided)')
     
     # GA Hyperparameters
     parser.add_argument('--pop-size', type=int, default=100, help='Population size (acts as batch size)')
@@ -254,7 +256,11 @@ def main():
     ))
     
     # Load Seed
-    seed_seq = select_oracle_seed(args.oracle, args.oracle_seed_idx)
+    if args.seed_seq is not None:
+        seed_seq = args.seed_seq
+        print(f"Using custom seed sequence ({len(seed_seq)} aa)")
+    else:
+        seed_seq = select_oracle_seed(args.oracle, args.oracle_seed_idx)
     seed_fitness = oracle.predict(seed_seq, increment=False)[0]
     print(f"Seed Fitness: {seed_fitness}")
     
