@@ -1,0 +1,84 @@
+# @package _global_
+
+# Fine-tune Antoine's PEINT checkpoint on Cherries dataset (~2200 transitions, ~4400 with permute_xy)
+
+defaults:
+  - override /data: plmr
+  - override /data/dataset: none
+  - override /data/dataset@data.dataset_train: cherries
+  - override /data/dataset@data.dataset_val: cherries_val
+  - override /data/dataset@data.dataset_test: cherries_test
+  - override /vocab: esm
+  - override /callbacks: default
+  - override /model: peint
+  - override /net: peint
+  - override /trainer: gpu
+  - override /logger: csv
+
+tags: ["cherries", "peint", "finetune"]
+
+seed: 42
+
+trainer:
+  max_epochs: null
+  max_steps: 8000  # ~58 epochs with batch_size=32, ~4400 samples
+  val_check_interval: 500  # Validate every 500 steps
+  accumulate_grad_batches: 2
+  check_val_every_n_epoch: null
+  gradient_clip_val: 1.0
+  log_every_n_steps: 10
+  precision: bf16
+
+callbacks:
+  model_checkpoint:
+    monitor: val/loss
+    mode: min
+    every_n_train_steps: 500
+    save_top_k: 3
+  lr_monitor:
+    logging_interval: step
+  early_stopping:
+    monitor: val/loss
+    mode: min
+    patience: 15  # Stop if no improvement for 15 validation checks
+
+model:
+  compile: false
+  weight_decay: 0.01
+  optimizer:
+    lr: 0.00005  # Lower learning rate for fine-tuning
+  scheduler:
+    num_warmup_steps: 400  # ~5% of total steps
+    num_training_steps: ${trainer.max_steps}
+
+# Match Antoine's checkpoint architecture (640 dim, 20 heads, 5 layers)
+net:
+  dropout_p: 0.0  # Match Antoine's checkpoint
+  num_heads: 20
+  embed_dim: 640
+  num_encoder_layers: 5
+  num_decoder_layers: 5
+  max_len: 1022
+  use_chain_embedding: false  # Single-chain sequences
+  use_attention_bias: true
+  causal_decoder: true
+  num_chains: 1
+  enc_model:
+    finetune: false
+    embed_x_per_chain: false
+
+data:
+  shuffle: true
+  num_workers: 4
+  batch_size: 32
+
+logger:
+  csv:
+    save_dir: ${paths.output_dir}/logs
+  wandb:
+    tags: ${tags}
+    project: peint
+    name: finetune_cherries_${now:%Y-%m-%d_%H-%M-%S}
+
+# Path to Antoine's original checkpoint (will be loaded via load_from_og_peint_checkpoint)
+og_checkpoint_path: /scratch/users/stephen.lu/projects/protevo/checkpoints/antoine/epoch=2-step=40000.ckpt

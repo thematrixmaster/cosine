@@ -1,0 +1,21 @@
+# Dataset config for Cherries (simple sequence pairs)
+_target_: peint.data.datasets.peint.EncodedPEINTDataset
+
+dataset:
+  _target_: evo.dataset.ComplexCherriesDataset
+  data_file: /scratch/users/stephen.lu/projects/post-train/rubisco/library/cherries_train.txt
+  cache_indices: true
+  min_t: 5e-3
+  max_len: null
+  quantize_t: false
+  permute_xy: true  # Double effective dataset size by randomly swapping seq1/seq2
+  sep_token: .
+  chain_id_offset: 1
+
+vocab: ${vocab}
+sep_token: .
+mask_prob: 0.15
+random_token_prob: 0.1
+leave_unmasked_prob: 0.1
+embed_x_per_chain: false  # Single-chain sequences (no separator in file)
+permute_chain_order: false  # Not applicable for single-chain
