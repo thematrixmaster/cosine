@@ -1,7 +1,0 @@
-_target_: peint.models.nets.transformer.VanillaTransformer
-vocab_size: 128
-output_size: 128
-hidden_dim: 256
-num_layers: 8
-num_heads: 16
-max_seq_len: 512

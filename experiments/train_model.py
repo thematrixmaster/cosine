@@ -26,7 +26,7 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 # more info: https://github.com/ashleve/rootutils
 # ------------------------------------------------------------------------------------ #
 
-from peint.utils import (
+from cosine.utils import (
     RankedLogger,
     extras,
     get_metric_value,
@@ -62,7 +62,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     # Check if we should load from original protein-evolution checkpoint
     if cfg.get("og_checkpoint_path"):
         log.info(f"Loading model from original PEINT checkpoint: {cfg.og_checkpoint_path}")
-        from peint.models.modules.peint_module import load_from_og_peint_checkpoint
+        from cosine.models.modules.peint_module import load_from_og_peint_checkpoint
 
         model = load_from_og_peint_checkpoint(cfg.og_checkpoint_path, device="cpu")
         model.train()  # Set to training mode

@@ -1,5 +1,5 @@
-# _target_: peint.data.datasets.peint.EncodedPEINTDataset
-_target_: peint.data.datasets.ctmc.CTMCDataset
+# _target_: cosine.data.datasets.peint.EncodedPEINTDataset
+_target_: cosine.data.datasets.ctmc.CTMCDataset
 
 dataset:
   _target_: torch.utils.data.ConcatDataset

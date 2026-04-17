@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "peint"
+name = "cosine"
 version = "0.0.1"
-description = "A framework for models of biological evolution"
+description = "CoSiNE: Conditional Simulation of Evolutionary Sequences with Neural CTMC Models"
 authors = [
     {name = "Stephen Z. Lu", email = "stephen.lu@berkeley.edu"}
 ]

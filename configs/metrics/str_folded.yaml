@@ -1,4 +1,4 @@
-_target_: peint.metrics.shared.StructureFoldingMetric
+_target_: cosine.metrics.shared.StructureFoldingMetric
 
 reference_path: null
 folding_method: colabfold

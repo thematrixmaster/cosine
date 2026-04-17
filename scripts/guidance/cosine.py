@@ -58,8 +58,8 @@ from tqdm import tqdm
 from evo.tokenization import Vocab
 from evo.oracles import get_oracle
 from evo.antibody import create_region_masks, compute_oasis_humanness, compute_iglm_humanness
-from peint.models.modules.ctmc_module import CTMCModule
-from peint.models.nets.ctmc import NeuralCTMC, NeuralCTMCGenerator
+from cosine.models.modules.ctmc_module import CTMCModule
+from cosine.models.nets.ctmc import NeuralCTMC, NeuralCTMCGenerator
 from oracle_counter import OracleCallCounter
 
 

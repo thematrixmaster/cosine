@@ -1,4 +1,4 @@
-_target_: peint.data.datasets.ctmc.CTMCDataset
+_target_: cosine.data.datasets.ctmc.CTMCDataset
 
 dataset:
   _target_: torch.utils.data.ConcatDataset

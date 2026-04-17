@@ -14,8 +14,8 @@ import numpy as np
 from evo.antibody import create_region_masks
 from evo.oracles import get_oracle
 from evo.tokenization import Vocab
-from peint.models.modules.ctmc_module import CTMCModule
-from peint.models.nets.ctmc import NeuralCTMC, NeuralCTMCGenerator
+from cosine.models.modules.ctmc_module import CTMCModule
+from cosine.models.nets.ctmc import NeuralCTMC, NeuralCTMCGenerator
 
 
 def count_mutations(seq1: str, seq2: str) -> dict:

@@ -24,8 +24,8 @@ from tqdm import tqdm
 
 from evo.oracles import get_oracle
 from evo.tokenization import Vocab
-from peint.models.modules.peint_module import PEINTModule
-from peint.models.nets.peint import PEINTGenerator
+from cosine.models.modules.peint_module import PEINTModule
+from cosine.models.nets.peint import PEINTGenerator
 
 
 def tokenize_sequence(sequence: str, vocab: Vocab, device: torch.device) -> torch.Tensor:

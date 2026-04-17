@@ -1,4 +1,4 @@
-_target_: peint.models.modules.ctmc_module.CTMCModule
+_target_: cosine.models.modules.ctmc_module.CTMCModule
 
 snr_delta: 0.0
 use_snr_loss: false

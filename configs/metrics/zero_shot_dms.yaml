@@ -1,4 +1,4 @@
-_target_: peint.metrics.peint.ZeroShotDMS
+_target_: cosine.metrics.peint.ZeroShotDMS
 
 datafile: ${paths.data_dir}/
 log_transform: true

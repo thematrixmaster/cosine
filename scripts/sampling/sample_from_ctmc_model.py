@@ -12,8 +12,8 @@ from matplotlib import pyplot as plt
 import seaborn as sns
 from datetime import datetime
 
-from peint.models.modules.ctmc_module import CTMCModule
-from peint.models.nets.ctmc import NeuralCTMC, NeuralCTMCGenerator
+from cosine.models.modules.ctmc_module import CTMCModule
+from cosine.models.nets.ctmc import NeuralCTMC, NeuralCTMCGenerator
 
 from evo.tensor import collate_tensors
 from evo.dataset import ComplexCherriesDataset, ComplexCherriesCollection

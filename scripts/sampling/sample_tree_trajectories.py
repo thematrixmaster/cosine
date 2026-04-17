@@ -48,8 +48,8 @@ from evo.tokenization import Vocab
 from evo.phylogeny import df_to_ete3_tree
 from evo.oracles import get_oracle
 from evo.antibody import get_closest_germline, generate_naive_sequence
-from peint.models.modules.ctmc_module import CTMCModule
-from peint.models.nets.ctmc import NeuralCTMC, NeuralCTMCGenerator
+from cosine.models.modules.ctmc_module import CTMCModule
+from cosine.models.nets.ctmc import NeuralCTMC, NeuralCTMCGenerator
 
 
 def parse_args():

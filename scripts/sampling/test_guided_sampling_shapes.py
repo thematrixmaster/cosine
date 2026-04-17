@@ -8,8 +8,8 @@ sys.path.insert(0, str(project_root))
 import torch
 from evo.tokenization import Vocab
 from evo.oracles import get_oracle
-from peint.models.modules.ctmc_module import CTMCModule
-from peint.models.nets.ctmc import NeuralCTMC, NeuralCTMCGenerator
+from cosine.models.modules.ctmc_module import CTMCModule
+from cosine.models.nets.ctmc import NeuralCTMC, NeuralCTMCGenerator
 
 def test_guided_sampling():
     """Test that guided sampling works with sequences including special tokens."""

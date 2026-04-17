@@ -1,4 +1,4 @@
-_target_: peint.models.nets.ctmc.NeuralCTMC.from_pretrained
+_target_: cosine.models.nets.ctmc.NeuralCTMC.from_pretrained
 
 reversible: false
 load_pretrained: false

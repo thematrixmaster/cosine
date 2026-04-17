@@ -25,8 +25,8 @@ from unittest.mock import MagicMock, mock_open, patch
 import numpy as np
 import pytest
 
-from peint.data.utils import Protein
-from peint.metrics.shared import SequenceIdentityMetric, StructureFoldingMetric
+from cosine.data.utils import Protein
+from cosine.metrics.shared import SequenceIdentityMetric, StructureFoldingMetric
 
 
 # Check if external dependencies are available

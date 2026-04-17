@@ -20,8 +20,8 @@ from datetime import datetime
 
 from evo.oracles import get_oracle, CovidOracle
 from evo.tokenization import Vocab
-from peint.models.modules.ctmc_module import CTMCModule
-from peint.models.nets.ctmc import NeuralCTMC, NeuralCTMCGenerator
+from cosine.models.modules.ctmc_module import CTMCModule
+from cosine.models.nets.ctmc import NeuralCTMC, NeuralCTMCGenerator
 
 
 def parse_args():

@@ -24,7 +24,7 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 # more info: https://github.com/ashleve/rootutils
 # ------------------------------------------------------------------------------------ #
 
-from peint.utils import (
+from cosine.utils import (
     RankedLogger,
     extras,
     instantiate_loggers,

@@ -1,2 +1,2 @@
 grad_norm:
-  _target_: peint.utils.callbacks.GradNormCallback
+  _target_: cosine.utils.callbacks.GradNormCallback
