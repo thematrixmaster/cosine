@@ -1,81 +1,99 @@
-# CoSiNE: Conditional Simulation of Evolutionary Sequences with Neural CTMC Models
+# CoSiNE: Neural Evolution of Antibodies
 
-Official implementation of **CoSiNE** (Conditional Simulation of Evolutionary Sequences), a framework for learning and sampling from neural continuous-time Markov chain (CTMC) models of protein evolution.
+<p align="center">
+  <img src="assets/drawio.png" alt="CoSiNE Overview" width="100%">
+</p>
 
-## Overview
+Official implementation of [**CoSiNE**](https://arxiv.org/abs/2602.18982) (Conditionally Site-Independent Neural Evolution of Antibody Sequences), a framework for modeling antibody affinity maturation using neural continuous-time Markov chain.
 
-CoSiNE learns sequence-conditional rate matrices that capture evolutionary dynamics from antibody sequence data. The model combines:
+## Key Features
 
-- **Neural CTMC**: Context-dependent parameterization of substitution rate matrices using ESM-2 embeddings
-- **Test-time Augmented Guidance (TAG)**: Oracle-guided sampling for optimizing biological properties
+CoSiNE can simulate antibody sequence affinity maturation and achieves strong performance in zero-shot variant effect prediction (VEP). With *Guided Gillespie* sampling, CoSiNE enables inference time steering of antibody properties using any plug-and-play predictor. This repository contains training scripts for CoSiNE as well as various inference time scripts for VEP and various sampling tasks.
+
+- **Unconditional affinity maturation:** CoSiNE simulates realistic antibody evolutionary trajectories over long horizons, mapping from germline sequences to mature sequences through point mutations.
+- **Guided Gillespie sampling:** CoSiNE supports plug-and-play predictor guidance which steers the properties of evolved sequences through any external differentiable oracle.
+- **CDR/Fr optimization:** By constraining the sites under evolution, CoSiNE enables re-design of CDR or framework regions only.
+- **Zero-shot VEP:** CoSiNE achieves exceptional performance on zero-shot variant effect prediction of antibody binding and expression assays. Our framework disentangles the effects of somatic hypermutation on observed affinity maturation rates, providing a selection score that strongly correlates with functional properties.
+
+## Table of Contents
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+  - [Unconditional Sampling](#unconditional-sampling)
+  - [Guided Gillespie Sampling](#guided-gillespie-sampling)
+  - [Zero-Shot Variant Effect Prediction](#zero-shot-variant-effect-prediction)
+- [Training](#training)
+  - [Dataset](#dataset)
+  - [Training From Scratch](#training-from-scratch)
+- [Reproducing Paper Results](#reproducing-paper-results)
+- [Citation](#citation)
+- [Contact](#contact)
+- [Acknowledgments](#acknowledgments)
 
 ## Installation
 
-### 1. Clone the Repository
-
 ```bash
-git clone https://github.com/YOUR_USERNAME/cosine.git
+git clone https://github.com/thematrixmaster/cosine.git
 cd cosine
 
 # Pull the evo submodule
 git submodule update --init
-```
 
-### 2. Set Up Environment
-
-We recommend using [uv](https://github.com/astral-sh/uv) for fast dependency management:
-
-```bash
-# Create and activate virtual environment
+# We recommend using [uv](https://github.com/astral-sh/uv) for package management
 uv venv --python 3.10
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
+source .venv/bin/activate
 uv sync
 ```
 
-### 3. Verify Installation
-
-```bash
-python -c "import cosine; print('CoSiNE installation successful!')"
-```
-
-## Data
-
-### DASM Dataset
-
-The primary dataset used for training is **DASM** (Deep Antibody Sequence Modeling dataset).
-
-**TODO: Add download link**
-
-```bash
-# Download and extract DASM data
-# mkdir -p data/dasm
-# wget [TODO: ADD DOWNLOAD LINK] -O data/dasm.tar.gz
-# tar -xzf data/dasm.tar.gz -C data/
-```
-
-See [`data/README.md`](data/README.md) for detailed data format documentation.
-
-## Model Checkpoints
-
-Pre-trained model checkpoints are available for reproducing paper results.
-
-**TODO: Add download link**
-
-```bash
-# Download pre-trained checkpoints
-# mkdir -p checkpoints
-# wget [TODO: ADD DOWNLOAD LINK] -O checkpoints/cosine_model.ckpt
-```
-
-See [`checkpoints/README.md`](checkpoints/README.md) for checkpoint details and usage.
-
 ## Quick Start
 
-### Training from Scratch
+Download the main model checkpoint trained on the DASM dataset from our paper.
 
-Train the CoSiNE model on DASM dataset:
+```bash
+mkdir -p checkpoints
+hf download thematrixmaster/cosine cosine_dasm.ckpt --local-dir checkpoints
+```
+
+### Unconditional Sampling
+
+To run unconditional (unguided) sampling with the downloaded CoSiNE checkpoint:
+
+```bash
+python scripts/guidance/cosine.py \
+    --model-path checkpoints/cosine_model.ckpt \
+    --seed-seq <starting-antibody-sequence> \
+    --branch-length 2.0 \
+    --batch-size 100 \
+    --output-path results/mature.csv \
+    --save-csv \
+    --seed 42
+```
+
+**Key Parameters:**
+- `--seed-seq`: Starting antibody sequence that you want to evolve.
+- `--branch-length`: Amount of evolutionary time to simulate. Value is calibrated to the expected number of mutations per site.
+- `--batch-size`: Number of sequences to sample.
+
+### *Guided Gillespie* Sampling
+
+```bash
+
+```
+
+### Zero-Shot Variant Effect Prediction
+
+
+## Training
+
+### Dataset
+
+The primary dataset used for training is taken from the [DASM](https://elifesciences.org/reviewed-preprints/109644v1) paper. You can access it via the huggingface datasets library:
+
+```bash
+hf download --repo-type dataset thematrixmaster/cosine --local-dir data
+```
+
+### Training From Scratch
+To train the CoSiNE model:
 
 ```bash
 # Basic training with default settings
@@ -88,156 +106,9 @@ uv run python experiments/train_model.py \
     model.optimizer.lr=0.0003
 ```
 
-### SLURM Cluster Training
-
-For distributed training on SLURM clusters:
-
-```bash
-sbatch train.sh experiments/train_model.py experiment=train_ctmc_model_on_dasm
-```
-
 ## Reproducing Paper Results
 
-### 1. Evaluate CoSiNE Model
-
-Run the main evaluation notebook to assess model performance:
-
-```bash
-jupyter notebook notebooks/eval_ctmc_model.ipynb
-```
-
-This notebook includes:
-- Likelihood evaluation on held-out sequences
-- Trajectory sampling visualization
-- Rate matrix analysis
-
-### 2. Perplexity Comparison
-
-Compare CoSiNE against baselines (DASM + Thrifty):
-
-```bash
-jupyter notebook notebooks/eval_ppl.ipynb
-```
-
-### 3. Oracle-Guided Sampling (CoSiNE Method)
-
-The **CoSiNE guided sampling algorithm** uses Test-time Augmented Guidance (TAG) for property optimization:
-
-```bash
-# Run CoSiNE guided sampling
-python scripts/guidance/cosine.py \
-    --checkpoint checkpoints/cosine_model.ckpt \
-    --oracle covid \
-    --num_sequences 100 \
-    --guidance_scale 2.0 \
-    --mutation_ceiling 10 \
-    --output results/guided_sequences.csv
-```
-
-**Key Parameters:**
-- `--oracle`: Oracle function for guidance (e.g., `covid`, `humanness`)
-- `--guidance_scale`: Strength of guidance (higher = stronger optimization)
-- `--mutation_ceiling`: Maximum mutations allowed from seed sequence
-- `--region_mask`: Restrict mutations to specific regions (e.g., CDR loops)
-
-See [`scripts/guidance/README.md`](scripts/guidance/) and [`docs/ctmc_guidance.md`](docs/ctmc_guidance.md) for detailed documentation.
-
-### 4. Baseline Comparisons
-
-Compare CoSiNE against other optimization methods:
-
-```bash
-# Genetic algorithm baseline
-python scripts/guidance/genetic.py --oracle covid --num_sequences 100
-
-# MLM (masked language model) baseline
-python scripts/guidance/mlm.py --oracle covid --num_sequences 100
-
-# Random baseline
-python scripts/guidance/random_baseline.py --oracle covid --num_sequences 100
-```
-
-## Repository Structure
-
-```
-cosine/
-├── cosine/                      # Main Python package
-│   ├── models/
-│   │   ├── nets/
-│   │   │   ├── ctmc.py         # Neural CTMC implementation
-│   │   │   ├── encoder.py      # ESM-2 encoder wrapper
-│   │   │   └── esm2.py         # ESM-2 flash attention
-│   │   └── modules/
-│   │       ├── ctmc_module.py  # PyTorch Lightning training module
-│   │       └── plmr_module.py  # Base module
-│   ├── data/
-│   │   ├── datasets/
-│   │   │   ├── ctmc.py         # CTMC dataset wrapper
-│   │   │   └── dasm.py         # DASM dataset
-│   │   └── datamodule.py       # Data loading
-│   ├── utils/                   # Utility functions
-│   └── metrics/                 # Evaluation metrics
-├── configs/                     # Hydra configuration files
-│   ├── experiment/
-│   │   └── train_ctmc_model_on_dasm.yaml
-│   ├── model/ctmc.yaml
-│   ├── net/ctmc.yaml
-│   └── data/dataset/
-│       ├── dasm-tr.yaml
-│       └── dasm-val.yaml
-├── experiments/                 # Training scripts
-│   ├── train_model.py          # Main training script
-│   └── eval_model.py           # Evaluation script
-├── scripts/
-│   ├── guidance/               # Guided sampling methods
-│   │   ├── cosine.py          # CoSiNE method (TAG)
-│   │   ├── genetic.py         # Genetic algorithm baseline
-│   │   ├── mlm.py             # MLM baseline
-│   │   └── random_baseline.py # Random baseline
-│   └── sampling/               # CTMC sampling utilities
-│       ├── oracle_guided_evolution.py
-│       └── sample_from_ctmc_model.py
-├── notebooks/                   # Analysis notebooks
-│   ├── eval_ctmc_model.ipynb   # Main evaluation (paper results)
-│   └── eval_ppl.ipynb          # Perplexity comparison
-├── docs/                        # Documentation
-│   ├── ctmc_guidance.md        # Guided sampling docs
-│   └── tag_implementation.md   # TAG algorithm details
-├── evo/                         # Submodule for biology utilities
-├── data/                        # Dataset storage
-└── checkpoints/                 # Model checkpoints
-```
-
-## Key Concepts
-
-### Neural CTMC
-
-The CoSiNE model parameterizes position-specific rate matrices Q(x, i) using neural networks:
-
-- **Input**: ESM-2 embeddings of sequence context
-- **Output**: Reversible rate matrices via Pande transformation
-- **Training**: Maximum likelihood on observed evolutionary transitions
-
-### Test-time Augmented Guidance (TAG)
-
-Oracle-guided Gillespie sampling with augmented state space for property optimization. See `scripts/guidance/cosine.py` for implementation.
-
-## Configuration System
-
-CoSiNE uses [Hydra](https://hydra.cc/) for configuration management:
-
-- **Base config**: `configs/train.yaml`
-- **Experiment configs**: `configs/experiment/train_ctmc_model_on_dasm.yaml`
-- **Override parameters**: Use command-line arguments
-
-Example:
-```bash
-python experiments/train_model.py \
-    experiment=train_ctmc_model_on_dasm \
-    model.reversible=true \
-    model.optimizer.lr=0.0001 \
-    trainer.max_epochs=50
-```
+The majority of analyses reported in the paper were performed in the `notebooks/eval_ctmc_model.ipynb` notebook. This includes likelihood evaluations (Fig. 2), guided sampling consistency and antibody quality metrics (Fig. 5,6, S8), as well as some additional analyses in the Appendix on sampling error (Fig. S4), per-site entropy (Fig. S5). 
 
 ## Citation
 
@@ -253,19 +124,16 @@ If you use CoSiNE in your research, please cite:
 }
 ```
 
-## License
-
-TODO: Add license information
-
 ## Contact
 
 For questions or issues, please open a GitHub issue or contact:
 - Stephen Z. Lu (stephen.lu@berkeley.edu)
+- Aakarsh Vermani (aakarshv@berkeley.edu)
 
 ## Acknowledgments
 
 This work builds on:
-- [ESM](https://github.com/facebookresearch/esm) - Protein language models
-- [CherryML](https://github.com/songlab-cal/CherryML) - Evolutionary pair data
-- [PyTorch Lightning](https://www.pytorchlightning.ai/) - Training framework
-- [Hydra](https://hydra.cc/) - Configuration management
+- [ESM](https://github.com/facebookresearch/esm)
+- [CherryML](https://github.com/songlab-cal/CherryML)
+- [DASM]()
+- 
