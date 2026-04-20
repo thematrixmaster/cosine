@@ -59,17 +59,8 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     log.info(f"Instantiating datamodule <{cfg.data._target_}>")
     datamodule: LightningDataModule = hydra.utils.instantiate(cfg.data)
 
-    # Check if we should load from original protein-evolution checkpoint
-    if cfg.get("og_checkpoint_path"):
-        log.info(f"Loading model from original PEINT checkpoint: {cfg.og_checkpoint_path}")
-        from cosine.models.modules.peint_module import load_from_og_peint_checkpoint
-
-        model = load_from_og_peint_checkpoint(cfg.og_checkpoint_path, device="cpu")
-        model.train()  # Set to training mode
-        log.info("Successfully loaded model from original checkpoint!")
-    else:
-        log.info(f"Instantiating model <{cfg.model._target_}>")
-        model: LightningModule = hydra.utils.instantiate(cfg.model)
+    log.info(f"Instantiating model <{cfg.model._target_}>")
+    model: LightningModule = hydra.utils.instantiate(cfg.model)
 
     log.info("Instantiating callbacks...")
     callbacks: List[Callback] = instantiate_callbacks(cfg.get("callbacks"))

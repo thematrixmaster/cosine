@@ -1,8 +1,8 @@
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
 import os
 import tempfile
 import warnings
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -142,8 +142,10 @@ class CosineDMSAnalyzer(PairedBaseDMSAnalyzer):
             (transitions, mutation_labels): parallel lists of transition strings
             and their corresponding mutation identifiers.
         """
-        df = self.df_all if chain == "combined" else (
-            self.df_heavy if chain == "heavy" else self.df_light
+        df = (
+            self.df_all
+            if chain == "combined"
+            else (self.df_heavy if chain == "heavy" else self.df_light)
         )
 
         transitions = []
@@ -194,18 +196,16 @@ class CosineDMSAnalyzer(PairedBaseDMSAnalyzer):
         Returns:
             (lls, ppls): per-sequence log-likelihoods and perplexities.
         """
+        from cosine.data.datamodule import PLMRDataModule
+        from cosine.data.datasets.ctmc import CTMCDataset
         from evo.dataset import ComplexCherriesDataset
-        from peint.data.datasets.ctmc import CTMCDataset
-        from peint.data.datamodule import PLMRDataModule
 
         datafile = tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="w")
         with open(datafile.name, "w") as f:
             f.write(f"{len(transitions)} transitions\n")
             f.write("\n".join(transitions))
 
-        dataset = ComplexCherriesDataset(
-            data_file=datafile.name, min_t=0.0, chain_id_offset=1
-        )
+        dataset = ComplexCherriesDataset(data_file=datafile.name, min_t=0.0, chain_id_offset=1)
         ctmc_dataset = CTMCDataset(
             dataset=dataset,
             sep_token=".",
@@ -221,7 +221,11 @@ class CosineDMSAnalyzer(PairedBaseDMSAnalyzer):
         vocab = self.ctmc_module.net.vocab
         special_tok_idxs = torch.tensor(
             [
-                vocab.bos_idx, vocab.pad_idx, vocab.eos_idx, vocab.unk_idx, vocab.mask_idx,
+                vocab.bos_idx,
+                vocab.pad_idx,
+                vocab.eos_idx,
+                vocab.unk_idx,
+                vocab.mask_idx,
                 vocab.tokens_to_idx.get("<null_1>", -1),
                 vocab.tokens_to_idx.get(".", -1),
                 vocab.tokens_to_idx.get("X", -1),
@@ -254,7 +258,9 @@ class CosineDMSAnalyzer(PairedBaseDMSAnalyzer):
             ll = (-nll * aa_mask.float()).sum(dim=-1)
             lls.append(ll.cpu().numpy())
 
-            nll_mean = (nll * aa_mask.float()).sum(dim=-1) / aa_mask.float().sum(dim=-1).clamp(min=1)
+            nll_mean = (nll * aa_mask.float()).sum(dim=-1) / aa_mask.float().sum(dim=-1).clamp(
+                min=1
+            )
             ppls.append(torch.exp(nll_mean).cpu().numpy())
 
         os.unlink(datafile.name)
@@ -336,7 +342,11 @@ class CosineDMSAnalyzer(PairedBaseDMSAnalyzer):
 
             # Row 0: no correction (raw CTMC LL)
             for j, cosine_col in enumerate(cosine_ll_cols):
-                cc = cosine_col + "_cosine" if cosine_col + "_cosine" in merged.columns else cosine_col
+                cc = (
+                    cosine_col + "_cosine"
+                    if cosine_col + "_cosine" in merged.columns
+                    else cosine_col
+                )
                 sub = merged[[cc, fitness_col_merged]].dropna()
                 if len(sub) >= 2:
                     corr, _ = corr_func(sub[cc], _fitness(sub))
@@ -345,8 +355,16 @@ class CosineDMSAnalyzer(PairedBaseDMSAnalyzer):
             # Rows 1+: corrected LL = cosine_ll - thrifty_ll
             for i, thrifty_col in enumerate(thrifty_ll_cols):
                 for j, cosine_col in enumerate(cosine_ll_cols):
-                    cc = cosine_col + "_cosine" if cosine_col + "_cosine" in merged.columns else cosine_col
-                    tc = thrifty_col + "_thrifty" if thrifty_col + "_thrifty" in merged.columns else thrifty_col
+                    cc = (
+                        cosine_col + "_cosine"
+                        if cosine_col + "_cosine" in merged.columns
+                        else cosine_col
+                    )
+                    tc = (
+                        thrifty_col + "_thrifty"
+                        if thrifty_col + "_thrifty" in merged.columns
+                        else thrifty_col
+                    )
                     sub = merged[[cc, tc, fitness_col_merged]].dropna()
                     if len(sub) >= 2:
                         corrected = sub[cc] - sub[tc]
