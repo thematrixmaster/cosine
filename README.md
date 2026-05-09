@@ -1,4 +1,4 @@
-# CoSiNE: Neural Evolution of Antibodies
+# CoSiNE: Neural Evolution of Antibodies (ICML 2026)
 
 <p align="center">
   <img src="assets/drawio.png" alt="CoSiNE Overview" width="100%">
